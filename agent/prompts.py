@@ -26,6 +26,12 @@ Format your response exactly like this:
 
 *From the labs:*
 [Any specific announcements from OpenAI, Anthropic, Google DeepMind, Meta AI, Mistral, etc. — only include if there are actual lab announcements]
+
+*Research papers worth reading:*
+• [Paper title](arxiv link) — one sentence on why it matters
+• [Paper title](arxiv link) — one sentence on why it matters
+• [Paper title](arxiv link) — one sentence on why it matters
+[Include only the 2-4 most impactful or interesting papers. Skip this section entirely if no notable papers today.]
 """
 
 USER_PROMPT_TEMPLATE = """Here are today's AI news articles collected from multiple sources. Create a well-curated daily digest. Deduplicate similar stories, prioritize significance, and focus on what's genuinely important.

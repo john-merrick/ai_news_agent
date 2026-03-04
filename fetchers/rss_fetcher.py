@@ -20,7 +20,8 @@ def fetch_rss_news() -> list[dict]:
                 if hasattr(entry, "published_parsed") and entry.published_parsed:
                     pub_date = datetime(*entry.published_parsed[:6])
 
-                if pub_date and pub_date < cutoff:
+                # Strict 24h filter — skip articles with no date or outside window
+                if not pub_date or pub_date < cutoff:
                     continue
 
                 articles.append({

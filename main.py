@@ -5,6 +5,7 @@ from fetchers.rss_fetcher import fetch_rss_news
 from fetchers.reddit_fetcher import fetch_reddit_news
 from fetchers.web_fetcher import fetch_web_news
 from fetchers.twitter_fetcher import fetch_twitter_news
+from fetchers.arxiv_fetcher import fetch_arxiv_papers
 from agent.summarizer import summarize_news
 from delivery.telegram import send_telegram_message
 
@@ -34,6 +35,11 @@ def run_agent():
     twitter = fetch_twitter_news()
     print(f"  {len(twitter)} tweets")
     all_articles.extend(twitter)
+
+    print("Fetching ArXiv papers...")
+    arxiv = fetch_arxiv_papers()
+    print(f"  {len(arxiv)} papers")
+    all_articles.extend(arxiv)
 
     print(f"\nTotal collected: {len(all_articles)} articles")
 

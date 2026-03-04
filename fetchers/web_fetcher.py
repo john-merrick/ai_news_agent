@@ -18,6 +18,7 @@ def fetch_web_news() -> list[dict]:
         "new AI model release announcement",
         "artificial intelligence research breakthrough",
         "large language model new capabilities",
+        "site:huggingface.co/papers daily papers",
     ]
 
     for query in queries:
