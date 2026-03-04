@@ -34,7 +34,7 @@ RSS_FEEDS = [
     # News & industry
     "https://hnrss.org/newest?q=AI+LLM+machine+learning&count=20",
     "https://venturebeat.com/category/ai/feed/",
-    "https://www.theverge.com/ai-artificial-intelligence/rss/index.xml",
+    "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
     "https://techcrunch.com/category/artificial-intelligence/feed/",
     # Research labs & orgs
     "https://huggingface.co/blog/feed.xml",
