@@ -1,0 +1,43 @@
+HOW THE SCHEDULED RUN WORKS
+===========================
+
+launchd is macOS's built-in task scheduler (like cron, but native to macOS).
+It runs as a background daemon and manages scheduled jobs across reboots.
+
+The config lives here:
+  ~/Library/LaunchAgents/com.ainewsagent.daily.plist
+
+That file tells launchd: at 7:00 AM every day, run the Python script.
+It was loaded with `launchctl load` and stays active across reboots —
+you don't need to do anything for it to keep running.
+
+
+CHECKING IT IN TERMINAL
+========================
+
+Is it registered and what was the last exit code?
+  launchctl list | grep ainewsagent
+
+  Output: - 0 com.ainewsagent.daily
+  - Column 1 (-): PID — `-` means not currently running, a number means active
+  - Column 2 (0): last exit code — 0 = success, anything else = error
+  - Column 3: job label
+
+Watch the live log during/after a run:
+  tail -f ~/codebase/langchain-projects/ai_news_agent/logs/agent.log
+
+Check for errors:
+  cat ~/codebase/langchain-projects/ai_news_agent/logs/agent.error.log
+
+Trigger a manual run immediately (writes to logs):
+  launchctl start com.ainewsagent.daily
+
+See the full plist config:
+  cat ~/Library/LaunchAgents/com.ainewsagent.daily.plist
+
+
+CAVEAT
+======
+
+If your Mac is asleep at 7 AM, launchd fires the job as soon as it wakes.
+If your Mac is shut down, the job is skipped until the next day at 7 AM.

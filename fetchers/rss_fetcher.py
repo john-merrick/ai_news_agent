@@ -1,0 +1,45 @@
+import feedparser
+import requests
+from datetime import datetime, timedelta
+from config import RSS_FEEDS, MAX_ARTICLES_PER_SOURCE, LOOKBACK_HOURS
+
+RSS_TIMEOUT = 10  # seconds per feed
+
+
+def fetch_rss_news() -> list[dict]:
+    """Fetch AI news from configured RSS feeds."""
+    articles = []
+    cutoff = datetime.now() - timedelta(hours=LOOKBACK_HOURS)
+
+    for feed_url in RSS_FEEDS:
+        try:
+            resp = requests.get(feed_url, timeout=RSS_TIMEOUT, headers={"User-Agent": "ai_news_agent/1.0"})
+            resp.raise_for_status()
+            feed = feedparser.parse(resp.content)
+            count = 0
+            for entry in feed.entries:
+                if count >= MAX_ARTICLES_PER_SOURCE:
+                    break
+
+                pub_date = None
+                if hasattr(entry, "published_parsed") and entry.published_parsed:
+                    pub_date = datetime(*entry.published_parsed[:6])
+
+                # Strict 24h filter — skip articles with no date or outside window
+                if not pub_date or pub_date < cutoff:
+                    continue
+
+                articles.append({
+                    "title": entry.get("title", "").strip(),
+                    "url": entry.get("link", ""),
+                    "summary": entry.get("summary", "")[:500],
+                    "source": feed.feed.get("title", feed_url),
+                    "published": pub_date.isoformat() if pub_date else None,
+                })
+                count += 1
+        except requests.Timeout:
+            print(f"[RSS] Timeout fetching {feed_url}, skipping.")
+        except Exception as e:
+            print(f"[RSS] Error fetching {feed_url}: {e}")
+
+    return articles
