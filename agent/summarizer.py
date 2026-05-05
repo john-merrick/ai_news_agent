@@ -131,8 +131,8 @@ def summarize_news(articles: list[dict]) -> str:
             trace_name="summarize_news",
             metadata={"article_count": str(len(articles))},
         ):
-            response = llm.invoke(messages, config={"callbacks": [langfuse_handler]})
+            response = _invoke_llm(llm, messages, callbacks=[langfuse_handler])
     else:
-        response = llm.invoke(messages)
+        response = _invoke_llm(llm, messages)
 
     return response.content
