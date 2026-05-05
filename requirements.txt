@@ -9,3 +9,5 @@ praw>=7.7
 exa-py>=1.0
 python-dotenv>=1.0
 apscheduler>=3.10,<4.0
+tenacity>=8.2,<10.0
+

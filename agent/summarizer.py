@@ -1,5 +1,13 @@
 from langchain_core.messages import SystemMessage, HumanMessage
 from datetime import datetime
+from tenacity import (
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+    before_sleep_log,
+)
+import logging
 from agent.prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
 from config import (
     LITELLM_API_KEY,
@@ -11,6 +19,35 @@ from config import (
 )
 
 MAX_ARTICLES = 50  # Cap sent to Claude to stay within token limits
+
+_logger = logging.getLogger(__name__)
+
+
+def _is_transient_llm_error(exc: BaseException) -> bool:
+    transient_types = {
+        "APIConnectionError",
+        "APITimeoutError",
+        "RateLimitError",
+        "InternalServerError",
+        "ServiceUnavailableError",
+    }
+    if type(exc).__name__ in transient_types:
+        return True
+    msg = str(exc).lower()
+    return any(token in msg for token in ("connection", "timeout", "timed out", "temporarily"))
+
+
+@retry(
+    retry=retry_if_exception(_is_transient_llm_error),
+    wait=wait_exponential(multiplier=2, min=2, max=30),
+    stop=stop_after_attempt(3),
+    before_sleep=before_sleep_log(_logger, logging.WARNING),
+    reraise=True,
+)
+def _invoke_llm(llm, messages, callbacks=None):
+    if callbacks:
+        return llm.invoke(messages, config={"callbacks": callbacks})
+    return llm.invoke(messages)
 
 
 def _format_articles(articles: list[dict]) -> str:
