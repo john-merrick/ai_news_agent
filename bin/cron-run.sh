@@ -32,11 +32,12 @@ fi
 
 TELEGRAM_BOT_TOKEN=$(op read "op://Dev-Secrets/telegram-news-bot/credential" 2>>"${ERROR_LOG}")
 TELEGRAM_CHAT_ID=$(op read "op://Dev-Secrets/telegram-news-bot/username" 2>>"${ERROR_LOG}")
-if [ -z "${TELEGRAM_BOT_TOKEN}" ] || [ -z "${TELEGRAM_CHAT_ID}" ]; then
-    echo "[${STAMP}] FATAL: failed to resolve telegram secrets via 1Password (op auth?)" >> "${ERROR_LOG}"
+TAVILY_API_KEY=$(op read "op://Dev-Secrets/Tavily API Key/credential" 2>>"${ERROR_LOG}")
+if [ -z "${TELEGRAM_BOT_TOKEN}" ] || [ -z "${TELEGRAM_CHAT_ID}" ] || [ -z "${TAVILY_API_KEY}" ]; then
+    echo "[${STAMP}] FATAL: failed to resolve secrets via 1Password (op auth?)" >> "${ERROR_LOG}"
     exit 1
 fi
-export TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID
+export TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TAVILY_API_KEY
 
 echo "[${STAMP}] --- cron run start ---" >> "${RUN_LOG}"
 "${PYTHON}" main.py >> "${RUN_LOG}" 2>> "${ERROR_LOG}"

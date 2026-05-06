@@ -19,8 +19,8 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# Exa
-EXA_API_KEY = os.getenv("EXA_API_KEY")
+# Tavily (web/news search + article extraction)
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 
 # Reddit (optional)
 REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID")
