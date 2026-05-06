@@ -3,11 +3,15 @@ from datetime import datetime
 
 from fetchers.rss_fetcher import fetch_rss_news
 from fetchers.reddit_fetcher import fetch_reddit_news
-from fetchers.web_fetcher import fetch_web_news
+from fetchers.tavily_fetcher import fetch_tavily_news
 from fetchers.twitter_fetcher import fetch_twitter_news
 from fetchers.arxiv_fetcher import fetch_arxiv_papers
+from agent.dedup import dedupe
+from agent.enricher import select_top_articles, enrich
 from agent.summarizer import summarize_news
 from delivery.telegram import send_telegram_message
+
+ENRICH_TOP_N = 10
 
 
 def run_agent():
@@ -26,10 +30,10 @@ def run_agent():
     print(f"  {len(reddit)} posts")
     all_articles.extend(reddit)
 
-    print("Fetching web news via Exa...")
-    web = fetch_web_news()
-    print(f"  {len(web)} articles")
-    all_articles.extend(web)
+    print("Fetching web news via Tavily...")
+    tavily = fetch_tavily_news()
+    print(f"  {len(tavily)} articles")
+    all_articles.extend(tavily)
 
     print("Fetching Twitter/X...")
     twitter = fetch_twitter_news()
@@ -46,6 +50,18 @@ def run_agent():
     if not all_articles:
         print("No articles collected. Check your API keys and internet connection.")
         return
+
+    before = len(all_articles)
+    all_articles = dedupe(all_articles)
+    print(f"Deduplicated: {before} → {len(all_articles)} articles")
+
+    print(f"Selecting top {ENRICH_TOP_N} for enrichment...")
+    top_indices = select_top_articles(all_articles, n=ENRICH_TOP_N)
+    print(f"  selected {len(top_indices)} indices")
+
+    print("Enriching with Tavily extract...")
+    all_articles, succeeded, attempted = enrich(all_articles, top_indices)
+    print(f"  enriched {succeeded}/{attempted} articles")
 
     print("Summarizing with Claude...")
     digest = summarize_news(all_articles)
