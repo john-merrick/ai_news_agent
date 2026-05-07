@@ -7,6 +7,11 @@
 #   tail of the error log so silent failures get noticed.
 set -o pipefail
 
+# cron runs with a stripped PATH (~/usr/bin:/bin/) so Homebrew binaries like
+# `op` and `curl` from Homebrew aren't found. Prepend the standard Homebrew
+# locations explicitly so `op` resolves on Apple Silicon and Intel Macs.
+export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PYTHON="${PROJECT_DIR}/venv/bin/python"
