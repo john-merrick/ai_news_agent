@@ -25,12 +25,11 @@ RUN_LOG="${LOG_DIR}/agent.log"
 ERROR_LOG="${LOG_DIR}/agent.error.log"
 STAMP=$(date +"%Y-%m-%d %H:%M:%S")
 
-OP_TIMEOUT_SECS=30
 LITELLM_URL="http://127.0.0.1:4000/health/liveness"
 LITELLM_COMPOSE_DIR="/Users/isaacboorer/mac-codebase/dev-ops/observability"
 LITELLM_SERVICE="litellm"
 LITELLM_RESTART_WAIT_SECS=60
-SERVICE_ACCOUNT_TOKEN_FILE="${HOME}/.config/op/service-account-token"
+SECRETS_FILE="${PROJECT_DIR}/.env.secrets"
 LOCK_DIR="/tmp/ai_news_agent.lock"
 
 mkdir -p "${LOG_DIR}"
