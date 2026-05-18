@@ -2,9 +2,9 @@
 # Cron wrapper for ai_news_agent daily digest.
 #
 # Defends against the failure modes we've actually seen since 2026-05-09:
-#   1. macOS biometric auth blocks `op read` from cron → use Service Account
-#      token if present (~/.config/op/service-account-token), and hard-cap
-#      every `op read` at 30s so we fail fast instead of zombieing for days.
+#   1. macOS biometric auth blocks `op read` from cron → secrets are
+#      pre-resolved into .env.secrets by `bin/refresh-secrets.sh` (run
+#      interactively). Cron itself never calls `op`.
 #   2. Yesterday's hung wrapper colliding with today's → single-instance
 #      lock with stale-PID detection.
 #   3. LiteLLM container dies silently → preflight ping, attempt restart,
