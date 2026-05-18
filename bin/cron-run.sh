@@ -56,50 +56,22 @@ fi
 echo $$ > "${LOCK_DIR}/pid"
 trap 'rm -rf "${LOCK_DIR}"' EXIT
 
-# --- 1Password Service Account (preferred for unattended use) -----------
-# When set, `op` skips the desktop-app integration and talks to 1Password's
-# API directly. Token file must be readable only by the user (chmod 600).
-if [ -r "${SERVICE_ACCOUNT_TOKEN_FILE}" ]; then
-    OP_SERVICE_ACCOUNT_TOKEN="$(< "${SERVICE_ACCOUNT_TOKEN_FILE}")"
-    export OP_SERVICE_ACCOUNT_TOKEN
-fi
-
-if ! command -v op >/dev/null 2>&1; then
-    echo "[${STAMP}] FATAL: 1Password CLI (op) not found on PATH" >> "${ERROR_LOG}"
+# --- Load pre-resolved secrets ------------------------------------------
+# .env.secrets is produced by `bin/refresh-secrets.sh` (which runs `op
+# inject` interactively). Cron never calls `op` itself, so the biometric
+# prompt that was hanging us at 06:00 every morning is out of the picture.
+if [ ! -r "${SECRETS_FILE}" ]; then
+    echo "[${STAMP}] FATAL: ${SECRETS_FILE} missing. Run bin/refresh-secrets.sh once interactively." >> "${ERROR_LOG}"
     exit 1
 fi
-
-# --- op_read_timeout: bounded `op read`, returns stdout on success ------
-# macOS has no `timeout(1)` by default. Background + watchdog + wait.
-op_read_timeout() {
-    local ref="$1"
-    local out_file
-    out_file=$(mktemp)
-    op read "$ref" >"${out_file}" 2>>"${ERROR_LOG}" &
-    local op_pid=$!
-    ( sleep "${OP_TIMEOUT_SECS}" && kill -9 "${op_pid}" 2>/dev/null ) &
-    local watchdog_pid=$!
-    wait "${op_pid}" 2>/dev/null
-    local rc=$?
-    kill -9 "${watchdog_pid}" 2>/dev/null
-    wait "${watchdog_pid}" 2>/dev/null
-    if [ "${rc}" -ne 0 ]; then
-        rm -f "${out_file}"
-        return 1
-    fi
-    cat "${out_file}"
-    rm -f "${out_file}"
-    return 0
-}
-
-TELEGRAM_BOT_TOKEN=$(op_read_timeout "op://Dev-Secrets/telegram-news-bot/credential")
-TELEGRAM_CHAT_ID=$(op_read_timeout "op://Dev-Secrets/telegram-news-bot/username")
-TAVILY_API_KEY=$(op_read_timeout "op://Dev-Secrets/Tavily API Key/credential")
-if [ -z "${TELEGRAM_BOT_TOKEN}" ] || [ -z "${TELEGRAM_CHAT_ID}" ] || [ -z "${TAVILY_API_KEY}" ]; then
-    echo "[${STAMP}] FATAL: failed to resolve secrets via 1Password (timeout or auth?). Service account token present: $([ -r "${SERVICE_ACCOUNT_TOKEN_FILE}" ] && echo yes || echo no)" >> "${ERROR_LOG}"
+set -a
+# shellcheck disable=SC1090
+. "${SECRETS_FILE}"
+set +a
+if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ] || [ -z "${TAVILY_API_KEY:-}" ]; then
+    echo "[${STAMP}] FATAL: ${SECRETS_FILE} missing one of TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID / TAVILY_API_KEY. Re-run bin/refresh-secrets.sh." >> "${ERROR_LOG}"
     exit 1
 fi
-export TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TAVILY_API_KEY
 
 # --- LiteLLM preflight + auto-restart -----------------------------------
 check_litellm() {
