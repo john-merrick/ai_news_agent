@@ -9,11 +9,12 @@
 #      lock with stale-PID detection.
 #   3. LiteLLM container dies silently → preflight ping, attempt restart,
 #      fail fast with alert if still down.
-#   4. On non-zero exit, post a Telegram alert with the tail of the error log.
+#   4. Operational alerts (success stats + errors) go to a dedicated
+#      sys-ops Telegram bot, keeping the user-facing digest channel clean.
 
 set -o pipefail
 
-# cron runs with a stripped PATH; Homebrew binaries (op, docker, curl) aren't
+# cron runs with a stripped PATH; Homebrew binaries (op, docker, curl, jq) aren't
 # found by default. Prepend Apple-Silicon + Intel Homebrew dirs.
 export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
 
@@ -23,6 +24,7 @@ PYTHON="${PROJECT_DIR}/venv/bin/python"
 LOG_DIR="${PROJECT_DIR}/logs"
 RUN_LOG="${LOG_DIR}/agent.log"
 ERROR_LOG="${LOG_DIR}/agent.error.log"
+STATUS_FILE="${LOG_DIR}/last-run.json"
 STAMP=$(date +"%Y-%m-%d %H:%M:%S")
 
 LITELLM_URL="http://127.0.0.1:4000/health/liveness"
@@ -57,9 +59,6 @@ echo $$ > "${LOCK_DIR}/pid"
 trap 'rm -rf "${LOCK_DIR}"' EXIT
 
 # --- Load pre-resolved secrets ------------------------------------------
-# .env.secrets is produced by `bin/refresh-secrets.sh` (which runs `op
-# inject` interactively). Cron never calls `op` itself, so the biometric
-# prompt that was hanging us at 06:00 every morning is out of the picture.
 if [ ! -r "${SECRETS_FILE}" ]; then
     echo "[${STAMP}] FATAL: ${SECRETS_FILE} missing. Run bin/refresh-secrets.sh once interactively." >> "${ERROR_LOG}"
     exit 1
@@ -72,6 +71,37 @@ if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ] || [ -z "$
     echo "[${STAMP}] FATAL: ${SECRETS_FILE} missing one of TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID / TAVILY_API_KEY. Re-run bin/refresh-secrets.sh." >> "${ERROR_LOG}"
     exit 1
 fi
+
+# --- Sys-ops alert routing ----------------------------------------------
+# Bot tokens look like "<digits>:<base64ish>" — guard against an unresolved
+# op:// reference accidentally landing as a literal string and 401ing.
+SYSOPS_OK=1
+if [ -z "${SYSOPS_TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${SYSOPS_TELEGRAM_CHAT_ID:-}" ] \
+   || [[ "${SYSOPS_TELEGRAM_BOT_TOKEN}" == op://* ]] || [[ "${SYSOPS_TELEGRAM_CHAT_ID}" == op://* ]] \
+   || [[ ! "${SYSOPS_TELEGRAM_BOT_TOKEN}" == *:* ]]; then
+    SYSOPS_OK=0
+    echo "[${STAMP}] WARN: SYSOPS_* credentials missing/unresolved; falling back to user bot for alerts" >> "${RUN_LOG}"
+fi
+
+# notify_sysops <text>  — best-effort; never fails the run.
+notify_sysops() {
+    local text="$1"
+    local token chat
+    if [ "${SYSOPS_OK}" = "1" ]; then
+        token="${SYSOPS_TELEGRAM_BOT_TOKEN}"
+        chat="${SYSOPS_TELEGRAM_CHAT_ID}"
+    else
+        token="${TELEGRAM_BOT_TOKEN}"
+        chat="${TELEGRAM_CHAT_ID}"
+    fi
+    # Telegram limit is 4096; truncate generously.
+    text="${text:0:3500}"
+    curl -sS -m 10 -X POST "https://api.telegram.org/bot${token}/sendMessage" \
+        --data-urlencode "chat_id=${chat}" \
+        --data-urlencode "text=${text}" \
+        --data-urlencode "disable_web_page_preview=true" \
+        >/dev/null 2>>"${ERROR_LOG}"
+}
 
 # --- LiteLLM preflight + auto-restart -----------------------------------
 check_litellm() {
@@ -92,19 +122,12 @@ if ! check_litellm; then
     done
     if ! check_litellm; then
         echo "[${STAMP}] FATAL: LiteLLM unreachable after ${LITELLM_RESTART_WAIT_SECS}s restart attempt" >> "${ERROR_LOG}"
-        # fall through to the alert path
-        EXIT=1
         END_STAMP=$(date +"%Y-%m-%d %H:%M:%S")
         ERR_TAIL=$(tail -c 1200 "${ERROR_LOG}" 2>/dev/null | tr -d '\000')
-        ALERT="ai_news_agent: LiteLLM down and could not be restarted at ${END_STAMP}.
+        notify_sysops "ai_news_agent: LiteLLM down and could not be restarted at ${END_STAMP}.
 
 ${ERR_TAIL}"
-        curl -sS -m 10 -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-            --data-urlencode "text=${ALERT}" \
-            --data-urlencode "disable_web_page_preview=true" \
-            >/dev/null 2>>"${ERROR_LOG}"
-        exit ${EXIT}
+        exit 1
     fi
 fi
 
@@ -115,16 +138,32 @@ EXIT=$?
 END_STAMP=$(date +"%Y-%m-%d %H:%M:%S")
 echo "[${END_STAMP}] --- cron run end (exit=${EXIT}) ---" >> "${RUN_LOG}"
 
-if [ ${EXIT} -ne 0 ]; then
+# --- Alert ---------------------------------------------------------------
+if [ ${EXIT} -eq 0 ]; then
+    # SUCCESS: read structured status file written by main.py.
+    if [ -r "${STATUS_FILE}" ] && command -v jq >/dev/null 2>&1; then
+        msg=$(jq -r '
+            "ai_news_agent: OK at \(.ended_at) (\(.duration_sec)s)\n" +
+            "RSS:\(.counts.rss)  Reddit:\(.counts.reddit)  Tavily:\(.counts.tavily)  Twitter:\(.counts.twitter)  ArXiv:\(.counts.arxiv)\n" +
+            "Total:\(.total_collected) → dedup:\(.after_dedupe) → enriched:\(.enriched_succeeded)/\(.enriched_attempted)\n" +
+            "Top:\n" +
+            ((.top_headlines // []) | map("  • [\(.source)] \(.title)") | join("\n")) +
+            (if .eval_score != null then "\nEval: \(.eval_score) — \(.eval_reasoning // "")" else "" end)
+        ' "${STATUS_FILE}" 2>/dev/null)
+        if [ -n "${msg}" ]; then
+            notify_sysops "${msg}"
+        else
+            notify_sysops "ai_news_agent: OK at ${END_STAMP} (status file unreadable)"
+        fi
+    else
+        notify_sysops "ai_news_agent: OK at ${END_STAMP} (no status file or jq missing)"
+    fi
+else
+    # FAILURE: include error tail.
     ERR_TAIL=$(tail -c 1200 "${ERROR_LOG}" 2>/dev/null | tr -d '\000')
-    ALERT="ai_news_agent failed at ${END_STAMP} (exit=${EXIT}). Last errors:
+    notify_sysops "ai_news_agent failed at ${END_STAMP} (exit=${EXIT}). Last errors:
 
 ${ERR_TAIL}"
-    curl -sS -m 10 -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-        --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-        --data-urlencode "text=${ALERT}" \
-        --data-urlencode "disable_web_page_preview=true" \
-        >/dev/null 2>>"${ERROR_LOG}"
 fi
 
 exit ${EXIT}
