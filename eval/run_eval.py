@@ -334,7 +334,7 @@ def digest_task(*, item, **kwargs):
 
 def setup_score_configs(langfuse: Langfuse):
     """Register score configurations in Langfuse for consistent display."""
-    all_criteria = {**UNIVERSAL_CRITERIA, **DOMAIN_CRITERIA}
+    all_criteria = {**UNIVERSAL_CRITERIA, **DOMAIN_CRITERIA, **SUBJECTIVE_CRITERIA}
 
     for name, info in all_criteria.items():
         try:
