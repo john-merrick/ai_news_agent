@@ -186,16 +186,19 @@ def _judge_criterion(judge, input_text: str, output_text: str, name: str, descri
     handler = _get_judge_langfuse_handler()
     config = {"callbacks": [handler]} if handler else {}
     response = judge.invoke(messages, config=config)
-    try:
-        result = json.loads(response.content)
-        if binary:
-            score = 1 if int(result["score"]) >= 1 else 0
-        else:
-            score = max(0.0, min(1.0, float(result["score"])))
-        return {"score": score, "reasoning": result["reasoning"]}
-    except (json.JSONDecodeError, KeyError, ValueError):
+    parsed = parse_judge_response(response.content)
+    if parsed is None:
         fallback = 0 if binary else 0.0
-        return {"score": fallback, "reasoning": f"Judge parse error: {response.content[:80]}"}
+        return {"score": fallback, "reasoning": f"Judge parse error: {str(response.content)[:80]}"}
+    try:
+        if binary:
+            score = 1 if int(parsed["score"]) >= 1 else 0
+        else:
+            score = max(0.0, min(1.0, float(parsed["score"])))
+        return {"score": score, "reasoning": parsed["reasoning"]}
+    except (KeyError, ValueError, TypeError):
+        fallback = 0 if binary else 0.0
+        return {"score": fallback, "reasoning": f"Judge schema error: {str(response.content)[:80]}"}
 
 
 # Cache the judge across evaluator calls
