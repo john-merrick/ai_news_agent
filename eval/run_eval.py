@@ -41,6 +41,7 @@ from eval.criteria import (
     JUDGE_SYSTEM_PROMPT as JUDGE_SYSTEM,
     JUDGE_USER_TEMPLATE as JUDGE_USER,
     BINARY_JUDGE_SYSTEM,
+    parse_judge_response,
 )
 
 # -- Domain-specific criteria (ai_news_agent) --
