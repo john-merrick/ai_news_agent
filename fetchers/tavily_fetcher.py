@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from tavily import TavilyClient
 
@@ -9,11 +9,28 @@ from config import (
     MAX_ARTICLES_PER_SOURCE,
 )
 
-GENERAL_QUERY = (
-    "AI model release OR LLM announcement OR machine learning breakthrough "
-    "OR artificial intelligence research"
-)
-LAB_QUERY = "new AI model OR research announcement OR product launch"
+# Rotate query strings by day-of-week so Tavily's stable news ranking doesn't
+# surface the same top stories every morning. Indexed by datetime.weekday()
+# (0 = Monday, 6 = Sunday).
+GENERAL_QUERIES = [
+    "AI model release OR LLM announcement this week",        # Mon
+    "machine learning research breakthrough OR new paper",   # Tue
+    "AI safety OR alignment OR policy OR regulation update", # Wed
+    "AI product launch OR startup OR funding round",         # Thu
+    "open source AI model OR weights release",               # Fri
+    "AI tools OR developer experience OR framework update",  # Sat
+    "AI industry analysis OR commentary OR opinion",         # Sun
+]
+
+LAB_QUERIES = [
+    "new AI model release announcement",                     # Mon
+    "research paper OR technical report",                    # Tue
+    "AI safety OR responsible deployment",                   # Wed
+    "product launch OR feature rollout",                     # Thu
+    "open source release OR model weights",                  # Fri
+    "developer tool OR API update",                          # Sat
+    "company strategy OR research direction",                # Sun
+]
 
 
 def _to_article(result: dict, source: str) -> dict:
@@ -27,20 +44,24 @@ def _to_article(result: dict, source: str) -> dict:
 
 
 def fetch_tavily_news() -> list[dict]:
-    """Fetch AI news via Tavily: general news + research company blogs (last 24h)."""
+    """Fetch AI news via Tavily: general news + research company blogs (rotated daily)."""
     if not TAVILY_API_KEY:
         print("[Tavily] No API key configured, skipping.")
         return []
 
-    days = max(1, LOOKBACK_HOURS // 24)
+    dow = datetime.now().weekday()
+    general_query = GENERAL_QUERIES[dow]
+    lab_query = LAB_QUERIES[dow]
+    print(f"[Tavily] dow={dow} general='{general_query[:60]}...' lab='{lab_query[:60]}...'")
+
     client = TavilyClient(api_key=TAVILY_API_KEY)
     articles: list[dict] = []
 
     try:
         general = client.search(
-            query=GENERAL_QUERY,
+            query=general_query,
             topic="news",
-            days=days,
+            time_range="day",
             max_results=20,
             include_answer=False,
             include_raw_content=False,
@@ -52,9 +73,9 @@ def fetch_tavily_news() -> list[dict]:
 
     try:
         labs = client.search(
-            query=LAB_QUERY,
+            query=lab_query,
             topic="news",
-            days=days,
+            time_range="day",
             max_results=MAX_ARTICLES_PER_SOURCE,
             include_domains=RESEARCH_COMPANY_DOMAINS,
             include_answer=False,
