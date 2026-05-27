@@ -159,6 +159,20 @@ def run_agent() -> int:
             status["error"] = "send_telegram_message returned False"
             exit_code = 2
 
+        # Best-effort: judge today's digest. Never blocks the run.
+        try:
+            from eval.daily_eval import evaluate_today
+
+            eval_result = evaluate_today(all_articles, digest)
+            status["eval_score"] = eval_result.get("score")
+            status["eval_reasoning"] = eval_result.get("reasoning")
+            if eval_result.get("error"):
+                status["eval_error"] = eval_result["error"]
+            print(f"[eval] score={status['eval_score']} reasoning={status.get('eval_reasoning', '')[:120]}")
+        except Exception as e:
+            status["eval_error"] = f"{type(e).__name__}: {e}"
+            print(f"[eval] failed (non-fatal): {e}")
+
     except Exception as e:
         status["status"] = "error"
         status["error"] = f"{type(e).__name__}: {e}"
