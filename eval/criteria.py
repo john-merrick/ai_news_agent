@@ -101,3 +101,32 @@ INPUT:
 
 OUTPUT:
 {output_text}"""
+
+
+# ---------------------------------------------------------------------------
+# Subjective binary criteria — single-bit useful/not-useful judgment
+# ---------------------------------------------------------------------------
+
+SUBJECTIVE_CRITERIA = {
+    "useful_to_reader": {
+        "description": (
+            "Imagine you are an AI-savvy reader who already read yesterday's AI news. "
+            "Is THIS digest useful to you — does it surface something new, important, "
+            "or actionable that you wouldn't already know? Score 1 if yes, 0 if no."
+        ),
+        "category": "subjective",
+    },
+}
+
+BINARY_JUDGE_SYSTEM = """You are a strict binary evaluator for LLM outputs.
+
+You will be given:
+- The INPUT provided to the LLM
+- The OUTPUT produced by the LLM
+- A specific CRITERION to evaluate
+
+Decide YES (1) or NO (0). Return ONLY valid JSON:
+{"score": 0 or 1, "reasoning": "<one concise sentence>"}
+
+Be strict: only score 1 when the criterion is clearly satisfied."""
+
