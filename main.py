@@ -12,10 +12,12 @@ from fetchers.arxiv_fetcher import fetch_arxiv_papers
 from agent.dedup import dedupe
 from agent.enricher import select_top_articles, enrich
 from agent.summarizer import summarize_news
+from agent.url_memory import load_seen, save_seen, filter_unseen
 from delivery.telegram import send_telegram_message
 
 ENRICH_TOP_N = 10
 STATUS_FILE = "logs/last-run.json"
+SEEN_URLS_FILE = "logs/seen-urls.json"
 
 
 def _atomic_write_json(path: str, payload: dict) -> None:
