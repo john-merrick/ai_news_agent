@@ -141,7 +141,7 @@ DATASET_ITEMS = [
 def _create_judge():
     """Create the LLM judge (separate from the model being evaluated)."""
     return ChatOpenAI(
-        model="gpt-4o",
+        model="claude-haiku-4-5",
         base_url=LITELLM_BASE_URL,
         api_key=LITELLM_API_KEY,
         temperature=0,
