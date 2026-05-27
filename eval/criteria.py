@@ -130,3 +130,34 @@ Decide YES (1) or NO (0). Return ONLY valid JSON:
 
 Be strict: only score 1 when the criterion is clearly satisfied."""
 
+
+def parse_judge_response(text: str) -> dict | None:
+    """Tolerant JSON parse — strips ```json fences and finds the outermost {...} block.
+
+    Returns the parsed dict or None on failure. Models like Haiku frequently wrap
+    JSON in code fences despite "Return ONLY valid JSON" instructions.
+    """
+    import json
+    import re
+
+    if not text:
+        return None
+    s = text.strip()
+    # Strip ```json ... ``` or ``` ... ``` wrappers
+    if s.startswith("```"):
+        s = re.sub(r"^```(?:json)?\s*", "", s)
+        s = re.sub(r"\s*```\s*$", "", s)
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        pass
+    # Extract the outermost {...} block as a fallback
+    match = re.search(r"\{.*\}", s, re.DOTALL)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+
+
