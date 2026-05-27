@@ -88,12 +88,15 @@ def evaluate_today(articles: list[dict], digest: str) -> dict:
             )),
         ]
         response = judge.invoke(messages)
+        parsed = parse_judge_response(response.content)
+        if parsed is None:
+            result["error"] = f"judge parse: {str(response.content)[:120]}"
+            return result
         try:
-            parsed = json.loads(response.content)
             result["score"] = 1 if int(parsed.get("score", 0)) >= 1 else 0
             result["reasoning"] = str(parsed.get("reasoning", ""))[:300]
-        except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
-            result["error"] = f"judge parse: {e}: {str(response.content)[:80]}"
+        except (KeyError, ValueError, TypeError) as e:
+            result["error"] = f"judge schema: {e}: {str(response.content)[:80]}"
             return result
     except Exception as e:
         result["error"] = f"judge call: {type(e).__name__}: {e}"
