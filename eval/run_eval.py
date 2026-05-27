@@ -167,10 +167,14 @@ def _get_judge_langfuse_handler():
         return None
 
 
-def _judge_criterion(judge, input_text: str, output_text: str, name: str, description: str) -> dict:
-    """Score an output on a single criterion using LLM-as-judge."""
+def _judge_criterion(judge, input_text: str, output_text: str, name: str, description: str, *, binary: bool = False) -> dict:
+    """Score an output on a single criterion using LLM-as-judge.
+
+    When binary=True, uses the binary judge prompt and returns a {0,1} integer score.
+    """
+    system_prompt = BINARY_JUDGE_SYSTEM if binary else JUDGE_SYSTEM
     messages = [
-        SystemMessage(content=JUDGE_SYSTEM),
+        SystemMessage(content=system_prompt),
         HumanMessage(content=JUDGE_USER.format(
             name=name,
             description=description,
@@ -183,10 +187,14 @@ def _judge_criterion(judge, input_text: str, output_text: str, name: str, descri
     response = judge.invoke(messages, config=config)
     try:
         result = json.loads(response.content)
-        score = max(0.0, min(1.0, float(result["score"])))
+        if binary:
+            score = 1 if int(result["score"]) >= 1 else 0
+        else:
+            score = max(0.0, min(1.0, float(result["score"])))
         return {"score": score, "reasoning": result["reasoning"]}
     except (json.JSONDecodeError, KeyError, ValueError):
-        return {"score": 0.0, "reasoning": f"Judge parse error: {response.content[:80]}"}
+        fallback = 0 if binary else 0.0
+        return {"score": fallback, "reasoning": f"Judge parse error: {response.content[:80]}"}
 
 
 # Cache the judge across evaluator calls
