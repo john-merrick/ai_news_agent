@@ -136,6 +136,13 @@ def run_agent() -> int:
 
         status["digest_preview"] = digest[:400]
 
+        # Persist the URLs we just digested so they're suppressed from the next 7 days.
+        # Only after summarisation succeeds — don't poison memory on transient LLM errors.
+        try:
+            save_seen(SEEN_URLS_FILE, [a.get("url", "") for a in all_articles])
+        except Exception as e:
+            print(f"[url_memory] save failed (non-fatal): {e}")
+
         print("\n--- DIGEST PREVIEW ---")
         print(digest[:600] + "\n[...]" if len(digest) > 600 else digest)
         print("--- END PREVIEW ---\n")
