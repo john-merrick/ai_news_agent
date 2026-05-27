@@ -27,7 +27,7 @@ from config import (
     LANGFUSE_SECRET_KEY,
     LANGFUSE_HOST,
 )
-from eval.criteria import SUBJECTIVE_CRITERIA, BINARY_JUDGE_SYSTEM, JUDGE_USER_TEMPLATE
+from eval.criteria import SUBJECTIVE_CRITERIA, BINARY_JUDGE_SYSTEM, JUDGE_USER_TEMPLATE, parse_judge_response
 
 DATASET_NAME = "ai-news-digest-daily"
 JUDGE_MODEL = "claude-haiku-4-5"
