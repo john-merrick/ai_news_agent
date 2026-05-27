@@ -38,23 +38,33 @@ DAILY_MINUTE = int(os.getenv("DAILY_MINUTE", "0"))
 MAX_ARTICLES_PER_SOURCE = int(os.getenv("MAX_ARTICLES_PER_SOURCE", "10"))
 LOOKBACK_HOURS = int(os.getenv("LOOKBACK_HOURS", "24"))
 
-# RSS feeds to poll (ArXiv is handled separately via the API fetcher)
+# Keyword filter applied to feeds that aren't AI-exclusive (HN frontpage, Simon Willison).
+# Case-insensitive substring match on the entry title.
+_AI_KEYWORD_FILTER = (
+    "ai ", " ai", "llm", "gpt", "claude", "gemini", "openai", "anthropic",
+    "deepmind", "model", "neural", "transformer", "machine learning",
+    "agent", "llama", "mistral", "diffusion", "hugging face", "mlx",
+)
+
+# RSS feeds to poll. Each entry is:
+#   {"url": str, "lookback_hours": int|None, "client_filter": tuple|None}
+# lookback_hours=None inherits LOOKBACK_HOURS. client_filter=None means no filter.
 RSS_FEEDS = [
     # News & industry
-    "https://hnrss.org/newest?q=AI+LLM+machine+learning&count=20",
-    "https://venturebeat.com/category/ai/feed/",
-    "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
-    "https://techcrunch.com/category/artificial-intelligence/feed/",
+    {"url": "https://hnrss.org/frontpage?points=100", "lookback_hours": None, "client_filter": _AI_KEYWORD_FILTER},
+    {"url": "https://venturebeat.com/category/ai/feed/", "lookback_hours": None, "client_filter": None},
+    {"url": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml", "lookback_hours": None, "client_filter": None},
+    {"url": "https://techcrunch.com/category/artificial-intelligence/feed/", "lookback_hours": None, "client_filter": None},
     # Research labs & orgs
-    "https://huggingface.co/blog/feed.xml",
-    "https://deepmind.google/blog/rss.xml",
-    "https://blog.research.google/feeds/posts/default",
-    "https://news.mit.edu/rss/topic/artificial-intelligence",
-    # Research curation
-    "https://paperswithcode.com/rss",
-    # Newsletters
-    "https://importai.substack.com/feed",
-    "https://aisnakeoil.substack.com/feed",
+    {"url": "https://huggingface.co/blog/feed.xml", "lookback_hours": None, "client_filter": None},
+    {"url": "https://deepmind.google/blog/rss.xml", "lookback_hours": None, "client_filter": None},
+    {"url": "https://research.google/blog/rss/", "lookback_hours": None, "client_filter": None},
+    {"url": "https://openai.com/blog/rss.xml", "lookback_hours": None, "client_filter": None},
+    # Independent commentary (broad blogs — filter to AI titles only)
+    {"url": "https://simonwillison.net/atom/everything/", "lookback_hours": None, "client_filter": _AI_KEYWORD_FILTER},
+    # Newsletters (weekly cadence — extend window so the 24h cutoff doesn't drop them)
+    {"url": "https://importai.substack.com/feed", "lookback_hours": 168, "client_filter": None},
+    {"url": "https://aisnakeoil.substack.com/feed", "lookback_hours": 168, "client_filter": None},
 ]
 
 # Research/lab domains for targeted Exa search
