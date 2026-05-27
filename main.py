@@ -100,8 +100,20 @@ def run_agent() -> int:
 
         before = len(all_articles)
         all_articles = dedupe(all_articles)
-        status["after_dedupe"] = len(all_articles)
         print(f"Deduplicated: {before} → {len(all_articles)} articles")
+
+        seen = load_seen(SEEN_URLS_FILE)
+        pre_memory = len(all_articles)
+        all_articles = filter_unseen(all_articles, seen)
+        status["after_dedupe"] = len(all_articles)
+        status["filtered_by_memory"] = pre_memory - len(all_articles)
+        print(f"URL memory: filtered {pre_memory} → {len(all_articles)} (dropped {pre_memory - len(all_articles)} seen in last 7d)")
+
+        if not all_articles:
+            print("All articles already seen in last 7 days — nothing fresh to digest.")
+            status["status"] = "no_fresh_articles"
+            status["error"] = "Every article was already in the 7-day URL memory"
+            return 1
 
         print(f"Selecting top {ENRICH_TOP_N} for enrichment...")
         top_indices = select_top_articles(all_articles, n=ENRICH_TOP_N)
