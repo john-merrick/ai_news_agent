@@ -229,6 +229,33 @@ def _make_evaluator(criterion_name: str, criterion_info: dict):
     return evaluator
 
 
+def _make_binary_evaluator(criterion_name: str, criterion_info: dict):
+    """Factory: create a Langfuse evaluator that returns a 0/1 binary score.
+
+    Stored as NUMERIC with min=0/max=1 score config — Langfuse v4's BOOLEAN
+    data_type round-tripping isn't reliable across all SDK minors, so we
+    keep it numeric and let the score config enforce the 0/1 display.
+    """
+
+    def evaluator(*, input, output, expected_output=None, **kwargs):
+        input_text = json.dumps(input, indent=1)[:2000] if isinstance(input, dict) else str(input)[:2000]
+        output_text = str(output)
+
+        result = _judge_criterion(
+            _get_judge(), input_text, output_text, criterion_name, criterion_info["description"],
+            binary=True,
+        )
+        return Evaluation(
+            name=criterion_name,
+            value=float(result["score"]),
+            comment=result["reasoning"],
+            data_type="NUMERIC",
+        )
+
+    evaluator.__name__ = f"eval_{criterion_name}_binary"
+    return evaluator
+
+
 def _make_composite_evaluator(criteria: dict, prefix: str):
     """Factory: create a weighted composite score from individual evaluations."""
 
