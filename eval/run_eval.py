@@ -37,8 +37,10 @@ from config import (
 from agent.summarizer import summarize_news
 from eval.criteria import (
     UNIVERSAL_CRITERIA,
+    SUBJECTIVE_CRITERIA,
     JUDGE_SYSTEM_PROMPT as JUDGE_SYSTEM,
     JUDGE_USER_TEMPLATE as JUDGE_USER,
+    BINARY_JUDGE_SYSTEM,
 )
 
 # -- Domain-specific criteria (ai_news_agent) --
