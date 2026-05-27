@@ -394,9 +394,10 @@ def run():
     print("\n[2/3] Setting up dataset...")
     dataset = setup_dataset(langfuse)
 
-    # 3. Build evaluators
+    # 3. Build evaluators (numeric criteria + binary subjective)
     all_criteria = {**UNIVERSAL_CRITERIA, **DOMAIN_CRITERIA}
     item_evaluators = [_make_evaluator(name, info) for name, info in all_criteria.items()]
+    item_evaluators += [_make_binary_evaluator(name, info) for name, info in SUBJECTIVE_CRITERIA.items()]
 
     # 4. Run experiment
     print(f"\n[3/3] Running experiment ({len(dataset.items)} items x {len(item_evaluators)} criteria)...")
