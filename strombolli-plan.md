@@ -1,287 +1,329 @@
-# AI News Agent — Development Plan
+# AI News Agent — Architectural Analysis & Development Roadmap
 
-> **Status:** Analysis & planning document. No source code is modified by this plan.
+> **Document type:** Analysis & planning only. This file is **purely additive** — it does not modify, move, or delete any existing source, configuration, script, or documentation file in the repository.
 > **Generated:** 2026-06-30
-> **Scope:** Architecture review, gap analysis, and a phased improvement roadmap for the `ai_news_agent` repository.
+> **Repository:** `ai_news_agent`
+> **Branch analysed:** `stromboli/38e36e2b-…-action-plan-md`
+> **Scope:** Current-state architecture review → concrete gap & technical-debt analysis → phased, independently-shippable improvement roadmap.
 
 ---
 
-## 1. Architecture Overview
+## 1. Executive Summary
 
-`ai_news_agent` is a Python application that builds and delivers a daily AI-news digest to Telegram. Each run follows a linear **fetch → dedupe → filter → rank → enrich → summarize → deliver → evaluate** pipeline orchestrated by `main.py::run_agent()`.
+`ai_news_agent` is a compact, single-purpose Python application that builds a daily AI-news digest and delivers it to Telegram. Each run:
 
-### 1.1 High-level data flow
+1. **Fetches** from five sources — RSS (11 feeds), Reddit, Tavily web/news search, Twitter/X, and ArXiv.
+2. **Deduplicates** by canonical URL (source-priority tie-break) and **filters** against a rolling 7-day "seen URLs" memory.
+3. **Ranks** the candidate pool with Claude to pick the top *N* most newsworthy items (deterministic fallback if the LLM misbehaves).
+4. **Enriches** those top items with full body text via Tavily `extract`.
+5. **Summarises** the pool into a ~500-word Markdown digest with Claude.
+6. **Delivers** the digest to Telegram (chunked, with a Markdown→plain-text fallback).
+7. **Evaluates** the digest best-effort with an LLM-as-judge, optionally logging to Langfuse and routing model calls/cost through a local LiteLLM proxy.
+
+The codebase is **small, readable, and notably defensive in its runtime paths**: atomic JSON writes (`os.replace`), `tenacity` retries on transient LLM/extract errors, per-source soft-fail isolation, a deterministic ranking fallback, and a Markdown→plain-text delivery fallback. A hardened cron wrapper (`bin/cron-run.sh`) adds single-instance locking, a LiteLLM preflight/auto-restart, and a separate sys-ops alert channel.
+
+The biggest weaknesses are **structural and correctness-related, not behavioural**:
+
+- **No automated tests, no CI, no linting or type-checking** — `pytest` collects **0 tests**. Every change is unverified.
+- **Fully synchronous, serial execution** — five fetchers run one after another, and within RSS the 11 feeds are fetched serially, each with a 10s timeout. Worst-case wall-clock is the *sum* of all network latencies.
+- **At least two real correctness bugs** — a timezone-naive date comparison in RSS filtering, and a `str.lstrip("www.")` misuse that corrupts hostnames during URL canonicalisation (affecting dedup **and** the seen-URL memory).
+- **Deduplication is URL-only** — the same story arriving under different URLs survives, leaning entirely on the summariser LLM to merge it.
+- **Documentation drift** — `README.md` references files and dependencies that do not exist in the tree (`web_fetcher.py`, Exa, a `.plist`), while omitting ones that do.
+- **Machine-coupled operations** — absolute paths and host assumptions are baked into `bin/cron-run.sh`.
+
+This roadmap front-loads the **safety net (tests + CI + lint)**, then **correctness fixes**, then **performance and maintainability**, then **scalability/observability**. Each phase is independently shippable and ordered so that later work is protected by the tests added earlier.
+
+---
+
+## 2. Current Architecture
+
+### 2.1 Component map
 
 ```
-                ┌─────────────────────────── fetchers/ ───────────────────────────┐
-                │  rss_fetcher   reddit_fetcher   tavily_fetcher   twitter_fetcher  arxiv_fetcher │
-                └───────┬──────────────┬───────────────┬───────────────┬────────────┬──────────┘
-                        │              │               │               │            │
-                        ▼              ▼               ▼               ▼            ▼
-                       all_articles : list[dict]  (title, url, summary, source, published, …)
-                        │
-                        ▼
-        agent/dedup.py  ──► collapse duplicate canonical URLs (keep highest-priority source)
-                        │
-                        ▼
-        agent/url_memory.py ──► drop URLs already digested in the last 7 days (rolling JSON store)
-                        │
-                        ▼
-        agent/enricher.py ──► select_top_articles() (Claude rank, deterministic fallback)
-                        │            └► enrich() (Tavily full-text extract for top N)
-                        ▼
-        agent/summarizer.py ──► summarize_news() (LiteLLM/Claude → Telegram-ready Markdown digest)
-                        │
-                        ▼
-        delivery/telegram.py ──► send_telegram_message() (chunked, Markdown→plain fallback)
-                        │
-                        ▼
-        eval/daily_eval.py ──► evaluate_today() (Haiku binary "useful?" judge, best-effort, non-blocking)
-                        │
-                        ▼
-        main.py ──► logs/last-run.json  (structured status for the cron wrapper's sys-ops alerts)
+ai_news_agent/
+├── main.py                  # Orchestrator: run_agent() + --schedule (APScheduler)
+├── config.py                # Env loading, RSS_FEEDS, keyword filter, research domains
+├── fetchers/
+│   ├── rss_fetcher.py       # 11 RSS feeds, per-feed lookback + title keyword filter
+│   ├── reddit_fetcher.py    # praw; 5 subreddits, MIN_SCORE=50
+│   ├── tavily_fetcher.py    # Tavily news search: general + lab-domain, rotated by weekday
+│   ├── twitter_fetcher.py   # Twitter/X recent search API v2
+│   └── arxiv_fetcher.py     # ArXiv Atom API: cs.AI/cs.LG/cs.CL/stat.ML, 48h window
+├── agent/
+│   ├── dedup.py             # Canonical-URL dedup with source-priority tie-break
+│   ├── url_memory.py        # 7-day rolling "seen URLs" JSON store
+│   ├── enricher.py          # LLM top-N ranking + Tavily extract enrichment
+│   ├── summarizer.py        # LangChain LLM client, tenacity retry, Langfuse hook
+│   └── prompts.py           # SYSTEM_PROMPT + USER_PROMPT_TEMPLATE
+├── delivery/
+│   └── telegram.py          # Boundary-aware chunking + Markdown→plain-text fallback
+├── eval/
+│   ├── criteria.py          # Universal + subjective criteria, judge prompts, JSON parse
+│   ├── daily_eval.py        # Per-run binary "useful?" judge (claude-haiku-4-5)
+│   └── run_eval.py          # Langfuse run_experiment over a canned dataset
+├── bin/
+│   ├── cron-run.sh          # Hardened cron wrapper (lock, preflight, sys-ops alerts)
+│   ├── refresh-secrets.sh   # Pre-resolve secrets into .env.secrets (1Password)
+│   └── weekly-eval.sh       # Weekly regression eval via eval/run_eval.py
+├── requirements.txt
+├── .env.example / .env.secrets.tmpl
+└── README.md / scheduled-job-details.txt
 ```
 
-### 1.2 Components & modules
+### 2.2 Data flow
 
-| Layer | File | Responsibility |
-|---|---|---|
-| **Entry point** | `main.py` | Orchestrates the pipeline, writes `logs/last-run.json`, flushes Langfuse, exposes `--schedule` mode (APScheduler). |
-| **Config** | `config.py` | Loads `.env`, defines RSS feed list, keyword filter, research-lab domains, schedule, and source limits. |
-| **Fetchers** | `fetchers/rss_fetcher.py` | Polls 11 RSS feeds with per-feed lookback windows + optional title keyword filter. |
-| | `fetchers/arxiv_fetcher.py` | Queries ArXiv API (cs.AI/LG/CL, stat.ML), 48h moderation-aware window. |
-| | `fetchers/reddit_fetcher.py` | PRAW; top posts from 5 subreddits, min-score gate. Optional (skips without creds). |
-| | `fetchers/tavily_fetcher.py` | Tavily news search: general + lab-domain queries, day-of-week rotated. |
-| | `fetchers/twitter_fetcher.py` | Twitter/X recent-search API. Optional (skips without bearer token). |
-| **Agent logic** | `agent/dedup.py` | Canonical-URL dedup with source-priority ranking. |
-| | `agent/url_memory.py` | 7-day rolling URL memory (atomic JSON) to suppress repeats across days. |
-| | `agent/enricher.py` | LLM ranking of top-N articles + Tavily full-text extraction; deterministic fallback. |
-| | `agent/summarizer.py` | LangChain LLM client factory (LiteLLM-preferred, Anthropic fallback), retry, Langfuse tracing, digest generation. |
-| | `agent/prompts.py` | System + user prompt templates for the digest. |
-| **Delivery** | `delivery/telegram.py` | Boundary-aware chunking, Markdown-with-plain-text fallback delivery. |
-| **Evaluation** | `eval/criteria.py` | Universal + domain + subjective criteria, judge prompts, tolerant JSON parser. |
-| | `eval/daily_eval.py` | Per-run binary "useful to reader?" judge + Langfuse dataset persistence. |
-| | `eval/run_eval.py` | Weekly canned-dataset regression eval via Langfuse experiments. |
-| **Ops** | `bin/cron-run.sh` | Cron wrapper: single-instance lock, secret loading, LiteLLM preflight/restart, sys-ops Telegram alerts. |
-| | `bin/refresh-secrets.sh` | Resolves 1Password `op://` refs → `.env.secrets` (mode 600). |
-| | `bin/weekly-eval.sh` | Cron wrapper for the weekly eval. |
-
-### 1.3 Technology stack
-
-- **Language:** Python 3.12 (uses `X | None` syntax, `list[dict]` generics).
-- **LLM access:** LangChain (`langchain-openai` against a LiteLLM proxy, `langchain-anthropic` as fallback). Default model alias `claude-sonnet`; judge `claude-haiku-4-5`.
-- **Observability:** Langfuse v4 (tracing + datasets + scores), optional.
-- **Resilience:** `tenacity` for exponential-backoff retries on transient LLM/Tavily errors.
-- **Data sources:** `feedparser`, `requests`, `praw`, `tavily-python`, raw ArXiv/Twitter HTTP.
-- **Scheduling:** system `cron` (primary, via `bin/cron-run.sh`) or APScheduler (`main.py --schedule`).
-- **Secrets:** 1Password CLI (`op inject`) → `.env.secrets`, sourced by cron.
-
-### 1.4 Notable design strengths
-
-- **Soft-fail everywhere:** every fetcher and the eval step swallow their own exceptions and return empty/partial results, so one dead source never breaks the run.
-- **Deterministic fallback** for LLM ranking (`_deterministic_top_n`) keeps the pipeline alive when the model is unavailable or returns malformed output.
-- **Atomic writes** (`os.replace`) for `last-run.json` and the URL-memory store prevent corruption on interrupted runs.
-- **Operational hardening** in `cron-run.sh`: single-instance lock with stale-PID detection, LiteLLM health preflight + auto-restart, and a separate sys-ops alert channel.
-- **Structured run status** (`logs/last-run.json`) gives the cron wrapper rich per-run telemetry.
-
----
-
-## 2. Identified Gaps
-
-### 2.1 Testing (highest priority)
-
-- **No automated tests exist at all.** There is no `tests/` directory, no `test_*.py` files, no `conftest.py`, no `pytest.ini`/`pyproject.toml`, and no CI workflow — yet `pytest` is available in the environment. The "run the existing test suite" step is currently a no-op.
-- The codebase contains a large amount of **pure, highly testable logic** that is entirely uncovered:
-  - `agent/dedup.py::_canonical_url` / `dedupe` (URL normalization, priority collapsing).
-  - `agent/url_memory.py` (7-day windowing, pruning, atomic merge).
-  - `delivery/telegram.py::_split_on_boundaries` (chunk-boundary logic).
-  - `agent/enricher.py::_parse_indices` / `_deterministic_top_n`.
-  - `eval/criteria.py::parse_judge_response` (fence-stripping, fallback extraction).
-  - `fetchers/rss_fetcher.py::_title_matches_filter` / `_entry_pub_date`.
-- No regression safety net means refactors (like the news-feed cleanup this branch implies) carry real risk.
-
-### 2.2 Correctness bugs
-
-- **`_canonical_url` uses `str.lstrip("www.")` (confirmed bug).** `lstrip` removes any leading characters in the set `{'w', '.'}`, **not** the literal prefix `"www."`. Verified examples:
-  - `wired.com` → `ired.com`
-  - `washingtonpost.com` → `ashingtonpost.com`
-  - `www.example.com` → `example.com` (correct only by coincidence).
-  This corrupts canonical hostnames for any domain beginning with `w`, which silently weakens **both** dedup and the 7-day URL memory (the same article can slip through as "unseen").
-- **Naive/aware datetime inconsistency.** `rss_fetcher` and `reddit_fetcher` use naive local `datetime.now()`; `arxiv_fetcher` uses tz-aware UTC; `twitter_fetcher` uses the deprecated `datetime.utcnow()`. Lookback cutoffs are therefore computed against mixed time references. It works today only because each fetcher compares within its own frame, but it is fragile and timezone-dependent.
-- **URL-only deduplication.** `dedupe` collapses by canonical URL only; the same story published at different URLs (the exact `dedup_required` scenario in `eval/run_eval.py`) survives and relies entirely on the LLM prompt to merge. No title-similarity / near-duplicate pass exists.
-
-### 2.3 Packaging & robustness
-
-- **Missing `__init__.py`** in `agent/`, `fetchers/`, and `delivery/` (only `eval/` has one). Imports work solely because the process runs from the repo root; running from elsewhere or packaging the project would break.
-- **No dependency pinning / lockfile.** `requirements.txt` uses range specifiers with no `requirements.lock`/hashes, so builds are not reproducible.
-- **Sequential network I/O.** ~11 RSS feeds + ArXiv + Reddit + Tavily + Twitter are fetched one after another, each with up to a 10–20s timeout. Worst-case wall-clock is the sum of all timeouts. No concurrency (`ThreadPoolExecutor`/`asyncio`) and no per-feed caching/ETags.
-- **No retry on RSS/ArXiv/Twitter HTTP.** Only the LLM and Tavily-extract calls use `tenacity`; transient network blips on feeds are simply dropped.
-
-### 2.4 Configuration & maintainability
-
-- **Hardcoded operational paths.** `bin/cron-run.sh` hardcodes `LITELLM_COMPOSE_DIR="/Users/isaacboorer/mac-codebase/dev-ops/observability"`, tying the repo to one machine/user.
-- **Hardcoded source lists in code.** RSS feeds, subreddits, Tavily query rotations, and research domains live in `config.py`/fetcher modules rather than an external, user-editable config (YAML/TOML). Tuning "news feeds" requires code edits.
-- **Magic numbers scattered** (`ENRICH_TOP_N=10`, `MAX_ARTICLES=50`, `MIN_SCORE=50`, `EXTRACT_MAX_CHARS=3000`) without centralization.
-
-### 2.5 Documentation drift
-
-- `README.md` is out of date relative to the actual code:
-  - References `fetchers/web_fetcher.py` and **Exa** web search — the repo now uses `fetchers/tavily_fetcher.py` and **Tavily**.
-  - The `pip install …` line lists `langchain-core langchain-openai langfuse exa-py … python-telegram-bot` which diverges from `requirements.txt` (no `exa-py`, no `python-telegram-bot`; Telegram is done via raw `requests`).
-  - "Scheduling (macOS)" documents a `com.ainewsagent.daily.plist` **launchd** file that does not exist in the repo; the real scheduling path is **cron** via `bin/cron-run.sh`.
-  - The "Project structure" tree omits `dedup.py`, `enricher.py`, `url_memory.py`, `arxiv_fetcher.py`, the entire `eval/` package, and `bin/`.
-
-### 2.6 Security & secrets
-
-- Secret handling is generally **good** (1Password injection, `.env.secrets` mode 600, `.gitignore` covers `.env`/`.env.secrets`, bot-token shape validation in `cron-run.sh`). Remaining gaps:
-  - **No automated secret scanning** (e.g. `gitleaks`/`trufflehog`) or pre-commit guard to catch an accidental key commit.
-  - **No SSRF/URL hardening** on `enrich()` — Tavily extracts arbitrary fetched URLs; low risk given sources, but unvalidated.
-  - **No dependency vulnerability scanning** (`pip-audit`/Dependabot).
-
-### 2.7 Observability & quality tooling
-
-- **No linter/formatter/type-checker config** (`ruff`, `black`, `mypy`). Style is consistent by hand but unenforced.
-- **No CI** to run tests/lint on push.
-- Eval is **best-effort and Langfuse-coupled**; there is no local, assertion-based quality gate that fails a build when digest quality regresses.
-
-### 2.8 Incomplete / latent features
-
-- `MAX_ARTICLES_PER_SOURCE` and `LOOKBACK_HOURS` are read by some fetchers inconsistently (e.g. Tavily general query hardcodes `max_results=20`, bypassing the per-source cap).
-- No de-noising of low-signal Reddit/Twitter items beyond a score threshold.
-- No persistence/archive of past digests (only the latest `last-run.json`), so trend analysis over time is limited to Langfuse.
-
----
-
-## 3. Recommendations & Phased Plan
-
-The phases are ordered to **establish a safety net first**, then fix correctness, then improve robustness and maintainability. Every change should preserve the existing soft-fail philosophy.
-
-### Phase 0 — Test harness & safety net *(foundational)*
-
-**Goal:** make the "run the test suite" step meaningful and lock in current behavior before any refactor.
-
-1. Add a `tests/` package and a `pyproject.toml` (or `pytest.ini`) with pytest config and coverage settings.
-2. Write **pure-function unit tests** (no network, no LLM) for:
-   - `dedup` — canonical URL normalization (including the `www.` cases below) and priority collapsing.
-   - `url_memory` — windowing, pruning, atomic merge, malformed-file tolerance.
-   - `telegram._split_on_boundaries` — long text, markdown-pair preservation, no-split short text.
-   - `enricher._parse_indices` and `_deterministic_top_n`.
-   - `criteria.parse_judge_response` — fenced JSON, raw JSON, garbage.
-   - `rss_fetcher._title_matches_filter` / `_entry_pub_date`.
-3. Add **dev dependencies** (`requirements-dev.txt`): `pytest`, `pytest-cov`, `responses`/`requests-mock` for HTTP fetchers.
-4. Add a minimal **GitHub Actions CI** workflow running `pytest` + lint on push/PR.
-
-*Acceptance:* `pytest` runs green with ≥70% coverage on `agent/`, `delivery/`, and `eval/criteria.py`.
-
-### Phase 1 — Correctness fixes *(guarded by Phase 0 tests)*
-
-1. **Fix `_canonical_url`** to strip the literal `www.` prefix (e.g. `host[4:] if host.startswith("www.") else host`). Add regression tests for `wired.com`, `washingtonpost.com`, `www.example.com`.
-2. **Standardize on timezone-aware UTC** across all fetchers; replace deprecated `datetime.utcnow()` with `datetime.now(timezone.utc)`; compute all lookback cutoffs in UTC.
-3. **Add a near-duplicate pass** (normalized-title similarity, e.g. token-set ratio) on top of URL dedup, so cross-URL duplicate stories collapse before the LLM step.
-
-### Phase 2 — Robustness & performance
-
-1. Add `__init__.py` to `agent/`, `fetchers/`, `delivery/`; make the project importable as a package.
-2. **Parallelize fetchers** with a bounded `ThreadPoolExecutor`, preserving per-source soft-fail. Expect a large wall-clock reduction.
-3. Extend `tenacity` retries to RSS/ArXiv/Twitter HTTP calls.
-4. Add a `requirements.lock` (pinned + hashes) for reproducible installs; wire `pip-audit` into CI.
-5. Honor `MAX_ARTICLES_PER_SOURCE` consistently (including Tavily general query).
-
-### Phase 3 — Configuration & maintainability
-
-1. Externalize feeds/subreddits/queries/domains into a `sources.yaml` (or `[tool.ai_news_agent]` in `pyproject.toml`), loaded by `config.py`. Keep current values as defaults.
-2. Remove the hardcoded `LITELLM_COMPOSE_DIR` from `cron-run.sh`; make it an env var with a documented default.
-3. Centralize magic numbers into `config.py` with env overrides.
-
-### Phase 4 — Documentation & developer experience
-
-1. Rewrite `README.md` to match reality: Tavily (not Exa), correct dependency list, cron (not launchd) scheduling, and a complete project-structure tree including `agent/`, `eval/`, and `bin/`.
-2. Add a `CONTRIBUTING.md` / developer setup section (venv, dev deps, running tests).
-3. Add `ruff` + `black` + `mypy` configs and a `.pre-commit-config.yaml` (format, lint, secret scan via `gitleaks`).
-
-### Phase 5 — Quality, security & observability hardening
-
-1. Add a **local assertion-based quality gate** (structural checks on the digest: required sections present, length bounds, links well-formed) that can run without Langfuse.
-2. Add secret scanning (`gitleaks`) and dependency scanning (Dependabot/`pip-audit`) to CI.
-3. Optionally **archive each digest** (date-stamped under `logs/`) to enable local trend analysis independent of Langfuse.
-4. Add lightweight SSRF guards/allowlist around `enrich()` URL extraction.
-
----
-
-## 3a. Test Coverage Assessment
-
-The project ships with **zero automated tests** today. The table below maps the highest-value, network-free units to the test files that Phase 0 should create. "Risk if untested" reflects the likelihood × impact of an undetected regression.
-
-| Module / function | Kind | Suggested test file | Risk if untested |
-|---|---|---|---|
-| `agent/dedup.py::_canonical_url` | pure | `tests/test_dedup.py` | **High** — confirmed `www.` bug already corrupts keys |
-| `agent/dedup.py::dedupe` | pure | `tests/test_dedup.py` | High — silent loss of articles on priority collapse |
-| `agent/url_memory.py` (load/save/filter) | pure + tmp file | `tests/test_url_memory.py` | High — repeats or over-suppression of stories |
-| `delivery/telegram.py::_split_on_boundaries` | pure | `tests/test_telegram.py` | Medium — broken Markdown → 400 delivery failures |
-| `agent/enricher.py::_parse_indices` | pure | `tests/test_enricher.py` | Medium — bad LLM output silently drops ranking |
-| `agent/enricher.py::_deterministic_top_n` | pure | `tests/test_enricher.py` | Medium — fallback ordering correctness |
-| `eval/criteria.py::parse_judge_response` | pure | `tests/test_criteria.py` | Medium — fenced/garbage JSON handling |
-| `fetchers/rss_fetcher.py::_title_matches_filter` | pure | `tests/test_rss.py` | Low — keyword filter correctness |
-| `fetchers/rss_fetcher.py::_entry_pub_date` | pure | `tests/test_rss.py` | Low — date parsing across feed variants |
-| `agent/summarizer.py::_is_transient_llm_error` | pure | `tests/test_summarizer.py` | Low — retry classification |
-
-**Coverage target for Phase 0:** ≥70% line coverage on `agent/`, `delivery/`, and `eval/criteria.py` using `pytest --cov`. Fetchers that perform network I/O should be tested with `responses`/`requests-mock` to stay hermetic.
-
-### Illustrative test stub (for reference only — not added to the repo by this plan)
-
-```python
-# tests/test_dedup.py
-from agent.dedup import _canonical_url, dedupe
-
-def test_www_prefix_is_stripped_literally():
-    # Regression for the lstrip("www.") bug.
-    assert _canonical_url("https://www.example.com/x") == "https://example.com/x"
-    assert _canonical_url("https://wired.com/x") == "https://wired.com/x"          # must NOT become ired.com
-    assert _canonical_url("https://washingtonpost.com/x").endswith("washingtonpost.com/x")
-
-def test_dedupe_keeps_higher_priority_source():
-    items = [
-        {"url": "https://a.com/1", "source": "Tavily News"},
-        {"url": "https://a.com/1", "source": "ArXiv"},
-    ]
-    out = dedupe(items)
-    assert len(out) == 1 and out[0]["source"] == "ArXiv"
+```
+fetchers → list[dict]  ──► dedupe() ──► filter_unseen(seen) ──► select_top_articles() (LLM rank)
+                                                                      │
+                                          enrich(top_indices) ◄───────┘  (Tavily extract → summary)
+                                                  │
+                                          summarize_news() (Claude) ──► send_telegram_message()
+                                                  │                               │
+                                          save_seen(urls)                  evaluate_today() (judge)
+                                                  │
+                                       _atomic_write_json(last-run.json)  (always, in finally)
 ```
 
----
+The universal in-memory contract is a plain `dict` per article:
+`{"title", "url", "summary", "source", "published"}` (plus optional `score`/`likes`). There is **no schema or validation** — every consumer reaches into the dict with `.get(...)`.
 
-## 3b. Risk Matrix
+### 2.3 Component-by-component notes
 
-| ID | Risk | Likelihood | Impact | Mitigation (phase) |
-|---|---|---|---|---|
-| R1 | Undetected regression from refactors (no tests) | High | High | Phase 0 test harness + CI |
-| R2 | `www.` canonicalization bug weakens dedup/memory | **Occurring now** | Medium | Phase 1 fix + regression test |
-| R3 | Timezone/`utcnow()` drift miscounts lookback window | Medium | Medium | Phase 1 UTC normalization |
-| R4 | One slow/blocking feed inflates run wall-clock | Medium | Low | Phase 2 parallel fetch + timeouts |
-| R5 | Accidental secret commit | Low | High | Phase 4 gitleaks pre-commit + CI |
-| R6 | Dependency CVE via unpinned ranges | Medium | Medium | Phase 2 lockfile + `pip-audit` |
-| R7 | README drift misleads setup (Exa vs Tavily, launchd vs cron) | **Occurring now** | Low | Phase 4 docs sync |
+**`main.py` — orchestrator.** A single `run_agent()` returns a shell-style exit code (0 ok, 1 no-articles/all-seen, 2 delivery-failed, 3 fatal). It accumulates a rich `status` dict and **always** writes `logs/last-run.json` in a `finally` block (so the cron wrapper can alert on stats). Good separation of *outcome* from *delivery*. The eval step is wrapped so it can never break the run. `--schedule` runs an immediate pass then hands off to a `BlockingScheduler`. **Observation:** all orchestration logging is via `print()`, the fetch sequence is hard-coded and serial, and per-stage constants (`ENRICH_TOP_N = 10`) are module-level literals.
 
----
+**`config.py` — configuration.** Cleanly env-driven via `python-dotenv`. `RSS_FEEDS` is a well-structured list of dicts (per-feed `lookback_hours` override + optional title `client_filter`), and weekly newsletters correctly extend their window to 168h. **Observation:** the LLM model names live in `agent/` and `eval/`, not here; `RESEARCH_COMPANY_DOMAINS` and the keyword filter are static.
 
-## 4. Suggested Priority Order
+**Fetchers.** Each returns `list[dict]` and **soft-fails to an empty list** on error, so one dead source never sinks the run — a strong design choice. RSS applies per-feed lookback + keyword filtering; ArXiv correctly uses timezone-aware datetimes and a 48h moderation window with early-exit on the sorted feed; Tavily rotates queries by `weekday()` to avoid repetition. **Observations:** RSS date handling is timezone-naive (see §3, Bug #1); Twitter uses the deprecated `datetime.utcnow()`; all network fetches inside RSS are serial.
 
-| Priority | Item | Rationale |
-|---|---|---|
-| **P0** | Phase 0 (tests + CI) | No safety net today; prerequisite for safe change. |
-| **P0** | `_canonical_url` `www.` fix | Confirmed correctness bug degrading dedup & memory. |
-| **P1** | Timezone normalization | Latent, timezone-dependent correctness risk; removes deprecation. |
-| **P1** | README/doc sync | Active drift misleads new contributors and setup. |
-| **P2** | Fetcher parallelism + retries | Meaningful runtime + reliability win. |
-| **P2** | Packaging (`__init__.py`, lockfile) | Reproducibility and import safety. |
-| **P3** | Externalized source config | Lets feed tuning happen without code edits. |
-| **P3** | Near-duplicate dedup | Quality improvement, depends on Phase 0 tests. |
-| **P4** | Lint/format/type/secret tooling | Long-term maintainability. |
+**`agent/dedup.py`.** `_canonical_url()` lowercases scheme/host, strips trailing slash, and drops query/fragment; `dedupe()` keeps the highest-priority source per canonical URL (ArXiv 100 → Tavily News 30) and preserves URL-less items. **Observation:** `host.lstrip("www.")` is a character-class strip, not a prefix strip (see §3, Bug #2). Dedup is URL-only — no title/near-duplicate detection.
+
+**`agent/url_memory.py`.** A 7-day rolling JSON map `{date: [canonical_urls]}`, pruned on every write, atomic via `os.replace`. Memory is only persisted **after** summarisation succeeds, so transient LLM failures don't poison it. **Observation:** it shares `_canonical_url`, so it inherits Bug #2; storage is a single local file (single-writer, non-portable).
+
+**`agent/enricher.py`.** `select_top_articles()` asks Claude for a JSON array of indices, validates/clamps them, and falls back to deterministic ranking (source priority + recency) if the response is weak or errors. `enrich()` batches Tavily `extract` (with retry) and replaces `summary` with body text, soft-failing per article. **Observations:** the ranking LLM call uses a **raw `llm.invoke`** — it is **not** wrapped in the `tenacity` retry used elsewhere, and it is **not** traced to Langfuse; `enrich()` mutates the input list in place.
+
+**`agent/summarizer.py`.** Central LLM factory `_create_llm()` (LiteLLM proxy preferred, direct Anthropic fallback), a shared transient-error classifier `_is_transient_llm_error`, and a `tenacity`-retried `_invoke_llm`. Langfuse tracing is attached via `propagate_attributes` when configured. **Observation:** model identifiers are string literals (`"claude-sonnet"`, `"claude-sonnet-4-6"`); `MAX_ARTICLES = 50` caps prompt size.
+
+**`delivery/telegram.py`.** Splits on paragraph→line→word boundaries to avoid cutting through Markdown pairs, and retries each chunk as plain text if Markdown parsing 400s — delivery almost always succeeds. **Observation:** no retry on transient network/5xx/429; partial multi-chunk delivery can leave a half-sent digest with no rollback signal beyond `all_ok=False`.
+
+**`eval/`.** `daily_eval.evaluate_today()` runs a cheap binary "useful?" judge and optionally records a Langfuse dataset item — fully best-effort, never raises. `run_eval.py` drives a Langfuse `run_experiment` over a hand-built dataset (including a `duplicate_stories` scenario), with weighted composite and run-level aggregators. `criteria.py` defines reusable universal/subjective criteria and a tolerant judge-JSON parser. This is the most mature subsystem. **Observation:** these are quality evals, **not** unit tests — they require live API keys and a running stack, and exercise none of the deterministic logic (dedup, canonicalisation, chunking, URL memory, index parsing).
+
+**`bin/` + scheduling.** `cron-run.sh` is genuinely battle-tested (lock, stale-PID detection, LiteLLM preflight/restart, sys-ops alerting, structured-status reporting via `jq`). **Observation:** it hard-codes `/Users/isaacboorer/mac-codebase/dev-ops/observability` and assumes `${PROJECT_DIR}/venv` and Homebrew paths — non-portable.
 
 ---
 
-## 5. Verification Notes for This Plan
+## 3. Architectural Gaps, Bugs & Technical Debt
 
-- This document is **additive only**: it creates `strombolli-plan.md` and modifies no existing source, configuration, or asset.
-- `git status` should show exactly one new untracked/added file: `strombolli-plan.md`.
-- The repository currently has **no test suite**, so running tests neither passes nor fails on existing code — establishing one is the first recommended action (Phase 0). The bug noted in §2.2 was confirmed empirically against the existing `agent/dedup.py` logic without modifying it.
+Ordered by severity. Each item cites the concrete location and the user-visible impact.
+
+### 3.1 Correctness bugs (highest priority)
+
+**Bug #1 — Timezone-naive RSS date filtering (`fetchers/rss_fetcher.py`).**
+`_entry_pub_date()` builds a **naive** datetime from feedparser's `*_parsed` struct, which is in **UTC** (`datetime(*ts[:6])`), then `fetch_rss_news()` compares it against `now = datetime.now()`, which is **local time**. For any non-UTC host the cutoff is offset by the UTC delta — silently dropping or admitting feed entries near the boundary. ArXiv does this correctly (timezone-aware) and Twitter is inconsistent (`datetime.utcnow()`), so behaviour differs per source. **Impact:** non-deterministic, location-dependent inclusion of borderline articles.
+
+**Bug #2 — `lstrip("www.")` corrupts hostnames (`agent/dedup.py`, `_canonical_url`).**
+`host.lstrip("www.")` strips any leading run of the *character set* `{w, .}`, not the literal prefix `"www."`. So `"wired.com"` → `"ired.com"`, `"www.foo.com"` → `"foo.com"` (intended), and `"web.dev"` → `"eb.dev"`. Because both `dedupe()` and `url_memory` canonicalise URLs, this **mis-canonicalises** affected hosts in two places: duplicates may not collapse, and the 7-day "seen" filter may fail to suppress (or wrongly suppress) stories. **Impact:** silent dedup/memory misses for any host beginning with `w`/`.` characters. Correct fix: `host.removeprefix("www.")`.
+
+**Bug #3 — Deprecated `datetime.utcnow()` (`fetchers/twitter_fetcher.py`).**
+Deprecated as of Python 3.12 and returns a naive value. Works today but emits warnings and is inconsistent with the timezone-aware approach ArXiv uses. **Impact:** future breakage + correctness drift.
+
+### 3.2 No automated test suite, CI, or static analysis (highest structural priority)
+
+`pytest` collects **0 tests** (verified on this branch); there is no `tests/` directory, no `pyproject.toml`/`pytest.ini`, no CI workflow, no linter or type-checker config. The `eval/` suite is a *quality* harness needing live keys — it does not protect the deterministic core. Highly testable pure functions are entirely uncovered:
+
+- `dedup._canonical_url`, `dedup.dedupe`, `dedup._priority`
+- `url_memory.load_seen` / `save_seen` / `filter_unseen` (pruning, atomic write)
+- `enricher._parse_indices`, `_deterministic_top_n`, `_format_listing`
+- `telegram._split_on_boundaries` (Markdown-safe chunking)
+- `criteria.parse_judge_response` (fence-stripping JSON parse)
+- `rss_fetcher._title_matches_filter`, `_entry_pub_date`
+
+**Impact:** Bugs #1 and #2 would have been caught instantly by a unit test. Every refactor in this roadmap is currently unguarded.
+
+### 3.3 Synchronous, serial execution (performance)
+
+`run_agent()` calls the five fetchers sequentially (`main.py` lines ~62–90), and `fetch_rss_news()` loops the 11 feeds serially, each with a 10s timeout. Worst-case fetch wall-clock is the **sum** of all source latencies (RSS alone can approach `11 × 10s` if multiple feeds are slow). Network I/O is the dominant cost and is trivially parallelisable. **Impact:** slow runs; higher chance of brushing the cron LiteLLM wait budget; poor latency headroom as feeds are added.
+
+### 3.4 Incomplete resilience / retry coverage
+
+- The **ranking** LLM call (`enricher.select_top_articles`) uses a bare `llm.invoke` — **no** `tenacity` retry, unlike `summarizer._invoke_llm` and `enricher._extract_batch`. A transient blip forces the deterministic fallback unnecessarily.
+- **Telegram** delivery has no retry on transient 429/5xx/network errors — only the Markdown→plain-text fallback.
+- There is **no global run timeout / watchdog**; a stuck retry or a missing per-call timeout can stall the whole run (the cron lock prevents pile-ups but the day's digest is lost).
+
+### 3.5 Deduplication is URL-only (content quality)
+
+`dedupe()` matches exact canonical URLs. The same announcement republished by VentureBeat, The Verge, and a Tavily result under different URLs is **not** merged — the burden falls entirely on the summariser LLM (the eval dataset's `duplicate_stories` scenario is explicit acknowledgement of this). **Impact:** near-duplicate stories inflate the candidate pool, waste enrichment/ranking budget, and risk repetition in the digest.
+
+### 3.6 Rate limiting & API-usage optimisation
+
+No client-side rate limiting, request budgeting, or response caching. ArXiv pulls up to 60 entries every run with no caching; Tavily issues two searches + one extract batch per run; three distinct Claude calls (rank, summarise, judge) happen every run with no prompt/result caching across retries. There is no coordination if multiple sources hit shared limits. **Impact:** avoidable cost and exposure to provider 429s, mitigated only partially by retries.
+
+### 3.7 State persistence is local-file-only
+
+`url_memory` (`logs/seen-urls.json`) and `last-run.json` are local, gitignored files with an explicit single-writer assumption. This is fine for one machine but blocks horizontal scaling, multi-host failover, or moving to serverless. **Impact:** state is non-portable and tied to one host's filesystem.
+
+### 3.8 Hard-coded configuration & machine coupling
+
+- **Model names** as string literals across modules: `"claude-sonnet"` and `"claude-sonnet-4-6"` (`summarizer._create_llm`), `"claude-haiku-4-5"` (`daily_eval`, `run_eval`). `"claude-sonnet-4-6"` is the kind of typo-prone literal worth centralising.
+- **Tuning constants** scattered as literals: `ENRICH_TOP_N` (main), `MAX_ARTICLES` (summarizer), `MIN_SCORE`/`SUBREDDITS` (reddit), `GENERAL_QUERIES`/`LAB_QUERIES` (tavily), `ARXIV_CATEGORIES`/`max_results=60` (arxiv), `MAX_CHUNK` (telegram).
+- **`bin/cron-run.sh`** hard-codes `/Users/isaacboorer/mac-codebase/dev-ops/observability`, `${PROJECT_DIR}/venv`, and Homebrew paths. **Impact:** the repo only runs unmodified on its author's machine.
+
+### 3.9 Observability: `print()` instead of structured logging
+
+Almost all runtime diagnostics use `print()`; only `summarizer`/`enricher` create a `logging` logger (used by `tenacity`). There are no log levels, no structured fields, no correlation/run IDs across the pipeline. The status JSON + sys-ops alerts are good, but log triage relies on grepping free-text stdout. **Impact:** hard to filter/aggregate; no severity control; weak debuggability beyond the status file.
+
+### 3.10 Documentation drift (`README.md`)
+
+The README describes a structure and stack that diverge from the code:
+- References **`fetchers/web_fetcher.py`** and **Exa** web search — neither exists; the implementation uses **Tavily**. `.env.example` correctly lists `TAVILY_API_KEY`, but the README's variable table lists `EXA_API_KEY`.
+- The setup `pip install` line lists `exa-py`, `python-telegram-bot`, and `langchain` extras while **omitting** `tavily-python` and `tenacity` that `requirements.txt` actually pins.
+- Scheduling docs describe a macOS **`.plist` / launchd** flow, but the real, hardened scheduler is the **`bin/cron-run.sh`** cron wrapper; no `.plist` is in the tree.
+- Source lists (e.g. "MIT AI News") are inconsistent with `config.RSS_FEEDS`. **Impact:** a new contributor following the README cannot reproduce the working setup.
+
+### 3.11 Minor / housekeeping
+
+- `enrich()` mutates the caller's list in place (surprising side effect; `main.py` reassigns the return so it's masked).
+- No `pyproject.toml`/packaging metadata; imports rely on running from the repo root (`sys.path.insert(0, ".")` in `run_eval.py`).
+- `status` dict keys are added ad-hoc (`filtered_by_memory`, `eval_*`) — no typed schema, so the `jq` consumer in `cron-run.sh` is coupled to undocumented field names.
+- ArXiv `max_results=60` candidates can dominate the pre-dedup pool versus other sources.
+
+---
+
+## 4. Proposed Improvements
+
+Mapped 1:1 to the gaps above, with concrete, idiomatic approaches that fit the existing style.
+
+### 4.1 Fix the correctness bugs
+- **Bug #1:** make all date handling timezone-aware. In `rss_fetcher`, build UTC-aware datetimes (`datetime(*ts[:6], tzinfo=timezone.utc)`) and compare against `datetime.now(timezone.utc)`. Apply the same convention everywhere; replace Twitter's `datetime.utcnow()` with `datetime.now(timezone.utc)`.
+- **Bug #2:** replace `host.lstrip("www.")` with `host.removeprefix("www.")` in `dedup._canonical_url`. Add a regression test asserting `"wired.com"` is preserved.
+- Centralise a tiny `utils/time.py` with `now_utc()` and a `parse_to_utc()` helper to prevent recurrence.
+
+### 4.2 Establish the test + CI safety net (do this first)
+- Add `tests/` with `pytest` unit tests for every pure function listed in §3.2. Target the deterministic core first — no network, no API keys.
+- Add `pyproject.toml` (or `pytest.ini`) with `pytest` config and coverage settings; set an initial coverage floor (e.g. 70%) and ratchet up.
+- Introduce **`ruff`** (lint + format) and **`mypy`** (typed, starting non-strict) with config in `pyproject.toml`.
+- Add a **GitHub Actions** workflow running `ruff check`, `mypy`, and `pytest --cov` on push/PR.
+- Mock external clients (`requests`, `TavilyClient`, LangChain LLM, Telegram) with fixtures; add fixture RSS/ArXiv payloads under `tests/fixtures/`.
+
+### 4.3 Parallelise fetching
+- Run the five fetchers concurrently with a `ThreadPoolExecutor` (they are blocking I/O; threads are the lowest-risk change and require no `async` rewrite). Parallelise the 11 RSS feeds the same way inside `fetch_rss_news`.
+- Preserve soft-fail isolation: gather per-source results, log failures, never let one cancel others. Expected wall-clock drops from *sum* to *max* of source latencies.
+- (Optional, later) An `asyncio`/`httpx` rewrite if/when fetch count grows substantially.
+
+### 4.4 Complete resilience coverage
+- Wrap `select_top_articles`'s LLM call in the shared `_invoke_llm` (retry + Langfuse trace) so ranking gets the same robustness as summarisation.
+- Add bounded retry with backoff to Telegram `_post` for 429/5xx/network (honouring `Retry-After` when present).
+- Add per-stage and whole-run timeouts/watchdog so a single stuck call can't consume the run; record a timeout outcome in `status`.
+
+### 4.5 Add near-duplicate detection
+- Layer a cheap title-similarity pass on top of URL dedup: normalise titles (lowercase, strip punctuation/stopwords) and collapse via token-set ratio (e.g. `rapidfuzz`) or a shingled hash, keeping the highest-priority source — reuse `_SOURCE_PRIORITY`. Keep URL dedup as the first, exact pass.
+- Validate against the existing `duplicate_stories` eval scenario to confirm fewer near-dupes reach the summariser.
+
+### 4.6 Rate limiting & caching
+- Add a small client-side limiter/backoff wrapper around outbound calls; centralise per-provider limits in config.
+- Cache ArXiv/Tavily responses for the run window (content-hash or short TTL on disk) so retries and re-runs don't re-pay; this also makes tests reproducible.
+
+### 4.7 Pluggable persistence
+- Extract a `SeenStore` interface with the current JSON file as the default implementation, plus a SQLite implementation (single-file, std-lib, still local but transactional and queryable). This keeps the simple default while unlocking a path to a shared store (Redis/Postgres) without touching call sites.
+
+### 4.8 Centralise configuration
+- Move all model identifiers and tuning constants into `config.py` (env-overridable): `RANK_MODEL`, `SUMMARY_MODEL`, `JUDGE_MODEL`, `ENRICH_TOP_N`, `MAX_ARTICLES`, `MIN_SCORE`, `MAX_CHUNK`, etc.
+- Replace machine-specific literals in `bin/cron-run.sh` with env vars (`OBSERVABILITY_DIR`, `PYTHON_BIN`) sourced from `.env`/`.env.secrets`, with sensible defaults.
+- Consider `pydantic-settings` for typed, validated config loading (fail fast on missing required keys).
+
+### 4.9 Structured logging
+- Replace `print()` with the stdlib `logging` module configured once in `main.py` (level via `LOG_LEVEL` env). Emit a per-run correlation ID and attach it to each stage's log records and to the `status` dict.
+- Optionally JSON-format logs for machine ingestion while keeping human-readable console output in dev.
+
+### 4.10 Typed article model
+- Introduce a `pydantic` `Article` model (or a `@dataclass`) for the inter-stage contract, with validation at fetcher boundaries. Type the `status` payload as a `TypedDict`/model so the `jq` consumer in `cron-run.sh` has a documented schema.
+
+### 4.11 Documentation realignment
+- Rewrite the README to match reality: Tavily (not Exa), the actual `requirements.txt`, the `bin/cron-run.sh` cron flow (not a `.plist`), and the true module list. Add an architecture diagram and a "running tests" section. (Per constraints, this roadmap only *proposes* the rewrite; it does not edit `README.md`.)
+
+---
+
+## 5. Phased Implementation Roadmap
+
+Each phase is independently shippable. Phases 1–2 are protected by the tests added in Phase 1, so all later refactors are guarded.
+
+### Phase 0 — Baseline & guardrails *(½ day)*
+- [ ] Add `pyproject.toml` with `pytest`, `ruff`, `mypy`, and coverage config.
+- [ ] Add a GitHub Actions CI workflow: `ruff check` → `mypy` → `pytest --cov`.
+- [ ] Create `tests/` skeleton + `tests/fixtures/` with sample RSS/ArXiv payloads and a captured Telegram/Tavily response.
+- **Exit criteria:** CI runs green on an empty-but-present test suite; lint/type baseline recorded.
+
+### Phase 1 — Test the deterministic core *(1–2 days)*
+- [ ] Unit tests for `dedup` (incl. a `"wired.com"` canonicalisation regression), `url_memory` (pruning + atomic write via `tmp_path`), `enricher._parse_indices`/`_deterministic_top_n`, `telegram._split_on_boundaries`, `criteria.parse_judge_response`, `rss_fetcher._title_matches_filter`/`_entry_pub_date`.
+- [ ] Mock-based tests for each fetcher's happy path + error soft-fail.
+- **Exit criteria:** ≥70% line coverage on `agent/`, `delivery/`, `fetchers/`; Bugs #1 and #2 reproduced by failing tests.
+
+### Phase 2 — Correctness fixes *(½–1 day)*
+- [ ] Fix Bug #2 (`removeprefix`), Bug #1 (timezone-aware RSS), Bug #3 (`now(timezone.utc)`); add `utils/time.py`.
+- [ ] Turn the Phase-1 failing tests green.
+- **Exit criteria:** all correctness tests pass; date filtering is host-timezone-independent.
+
+### Phase 3 — Performance: parallel fetching *(1 day)*
+- [ ] `ThreadPoolExecutor` across the five fetchers and across RSS feeds, preserving soft-fail isolation and per-source counts.
+- [ ] Add per-call timeouts everywhere and a whole-run watchdog.
+- **Exit criteria:** fetch wall-clock ≈ slowest source (not the sum); tests confirm isolation (one failing source doesn't fail others).
+
+### Phase 4 — Resilience & rate limiting *(1 day)*
+- [ ] Route ranking through retried/traced `_invoke_llm`; add Telegram transient-retry with `Retry-After`.
+- [ ] Add a client-side limiter/backoff + short-TTL response cache for ArXiv/Tavily.
+- **Exit criteria:** simulated 429/5xx in tests trigger bounded retry then succeed; ranking call is traced.
+
+### Phase 5 — Content quality: near-duplicate dedup *(1 day)*
+- [ ] Title-similarity second pass after URL dedup, reusing `_SOURCE_PRIORITY`.
+- [ ] Validate against the `duplicate_stories` eval scenario.
+- **Exit criteria:** near-dupes measurably reduced on fixtures without dropping distinct stories.
+
+### Phase 6 — Configuration & persistence *(1–2 days)*
+- [ ] Centralise models/constants in `config.py` (env-overridable), ideally via `pydantic-settings`.
+- [ ] De-hardcode `bin/cron-run.sh` paths into env vars with defaults.
+- [ ] Extract `SeenStore` interface; add a SQLite backend behind the existing JSON default.
+- **Exit criteria:** no hard-coded model names or host paths in code/scripts; persistence backend is swappable behind one interface.
+
+### Phase 7 — Observability & typed contracts *(1 day)*
+- [ ] Replace `print()` with `logging` + per-run correlation ID; `LOG_LEVEL` env.
+- [ ] Introduce a typed `Article` model and a `TypedDict`/model for `status`.
+- **Exit criteria:** logs carry levels + run ID; article/status schemas are validated and documented.
+
+### Phase 8 — Documentation *(½ day)*
+- [ ] Rewrite `README.md` to match the actual stack/flow; add architecture diagram and a "running tests" section; document the `status` schema consumed by `cron-run.sh`.
+- **Exit criteria:** a fresh contributor can set up, run, and test from the README alone.
+
+### Suggested sequencing
+`Phase 0 → 1 → 2` form the critical path (safety net + correctness). Phases 3–7 can be parallelised across contributors once the test net exists. Phase 8 should trail whatever lands to avoid re-drift.
+
+---
+
+## 6. Risk & Effort Summary
+
+| Phase | Theme | Effort | Risk | Primary payoff |
+|------:|-------|:------:|:----:|----------------|
+| 0 | CI / lint / types scaffold | ½ d | Low | Foundation for everything |
+| 1 | Test the core | 1–2 d | Low | Catches existing + future bugs |
+| 2 | Correctness fixes | ½–1 d | Low | Removes silent data-loss bugs |
+| 3 | Parallel fetch | 1 d | Med | Sum→max latency reduction |
+| 4 | Resilience + rate limit | 1 d | Med | Fewer dropped/failed runs |
+| 5 | Near-dup dedup | 1 d | Med | Higher digest quality |
+| 6 | Config + persistence | 1–2 d | Med | Portability + scalability |
+| 7 | Logging + typed models | 1 d | Low | Debuggability + safety |
+| 8 | Docs | ½ d | Low | Onboarding + accuracy |
+
+**Lowest-effort / highest-impact first moves:** Phase 2 Bug #2 (`removeprefix`, a one-line fix to a silent dedup/memory defect) and Phase 0–1 (the test net that would have caught it).
+
+---
+
+## 7. Appendix — Notable Strengths to Preserve
+
+These existing patterns are good and should be retained through any refactor:
+
+- **Per-source soft-fail isolation** in every fetcher — one dead source never sinks the run.
+- **Atomic JSON writes** (`os.replace`) for `last-run.json` and the seen-URL store.
+- **Deterministic ranking fallback** when the LLM ranker errors or returns junk.
+- **Markdown→plain-text delivery fallback** guaranteeing the digest is sent.
+- **`status` written in `finally`** so the cron wrapper always has stats to alert on.
+- **Seen-URL memory persisted only after successful summarisation** — no poisoning on transient failures.
+- **Hardened cron wrapper** — single-instance lock, LiteLLM preflight/auto-restart, separate sys-ops alert channel.
+- **A real eval harness** (`eval/`) — a strong base to extend with the deterministic unit tests this plan adds.
