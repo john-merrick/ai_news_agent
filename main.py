@@ -9,6 +9,7 @@ from fetchers.reddit_fetcher import fetch_reddit_news
 from fetchers.tavily_fetcher import fetch_tavily_news
 from fetchers.twitter_fetcher import fetch_twitter_news
 from fetchers.arxiv_fetcher import fetch_arxiv_papers
+from fetchers.anthropic_fetcher import fetch_anthropic_news
 from agent.dedup import dedupe
 from agent.enricher import select_top_articles, enrich
 from agent.summarizer import summarize_news
