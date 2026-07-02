@@ -46,7 +46,7 @@ def run_agent() -> int:
         "started_at": started_at.isoformat(),
         "ended_at": None,
         "duration_sec": None,
-        "counts": {"rss": 0, "reddit": 0, "tavily": 0, "twitter": 0, "arxiv": 0, "anthropic": 0, "openai": 0},
+        "counts": {"rss": 0, "reddit": 0, "tavily": 0, "twitter": 0, "arxiv": 0, "anthropic": 0, "openai": 0, "kimi": 0},
         "total_collected": 0,
         "after_dedupe": 0,
         "enriched_succeeded": 0,
