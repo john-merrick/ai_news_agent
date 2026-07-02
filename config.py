@@ -46,6 +46,16 @@ LOOKBACK_HOURS = int(os.getenv("LOOKBACK_HOURS", "24"))
 ANTHROPIC_NEWS_URL = os.getenv("ANTHROPIC_NEWS_URL", "https://www.anthropic.com/news")
 ANTHROPIC_LOOKBACK_HOURS = int(os.getenv("ANTHROPIC_LOOKBACK_HOURS", str(max(LOOKBACK_HOURS, 48))))
 
+# OpenAI News page (https://openai.com/news/).
+# OpenAI does not publish an official RSS feed for the news index (the legacy
+# /blog/rss.xml in RSS_FEEDS is stale/partial), so major announcements are
+# scraped directly from the server-rendered news index using stdlib parsing
+# (no extra deps), mirroring the Anthropic fetcher. Dates on the page are
+# day-granular, so use a wider default window than the global 24h cutoff to
+# avoid dropping announcements posted late the prior day.
+OPENAI_NEWS_URL = os.getenv("OPENAI_NEWS_URL", "https://openai.com/news/")
+OPENAI_LOOKBACK_HOURS = int(os.getenv("OPENAI_LOOKBACK_HOURS", str(max(LOOKBACK_HOURS, 48))))
+
 # Keyword filter applied to feeds that aren't AI-exclusive (HN frontpage, Simon Willison).
 # Case-insensitive substring match on the entry title.
 _AI_KEYWORD_FILTER = (

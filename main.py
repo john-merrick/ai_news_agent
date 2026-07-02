@@ -10,6 +10,7 @@ from fetchers.tavily_fetcher import fetch_tavily_news
 from fetchers.twitter_fetcher import fetch_twitter_news
 from fetchers.arxiv_fetcher import fetch_arxiv_papers
 from fetchers.anthropic_fetcher import fetch_anthropic_news
+from fetchers.openai_fetcher import fetch_openai_news
 from agent.dedup import dedupe
 from agent.enricher import select_top_articles, enrich
 from agent.summarizer import summarize_news
@@ -44,7 +45,7 @@ def run_agent() -> int:
         "started_at": started_at.isoformat(),
         "ended_at": None,
         "duration_sec": None,
-        "counts": {"rss": 0, "reddit": 0, "tavily": 0, "twitter": 0, "arxiv": 0, "anthropic": 0},
+        "counts": {"rss": 0, "reddit": 0, "tavily": 0, "twitter": 0, "arxiv": 0, "anthropic": 0, "openai": 0},
         "total_collected": 0,
         "after_dedupe": 0,
         "enriched_succeeded": 0,
@@ -95,6 +96,12 @@ def run_agent() -> int:
         status["counts"]["anthropic"] = len(anthropic)
         print(f"  {len(anthropic)} articles")
         all_articles.extend(anthropic)
+
+        print("Fetching OpenAI News...")
+        openai_news = fetch_openai_news()
+        status["counts"]["openai"] = len(openai_news)
+        print(f"  {len(openai_news)} articles")
+        all_articles.extend(openai_news)
 
         status["total_collected"] = len(all_articles)
         print(f"\nTotal collected: {len(all_articles)} articles")
