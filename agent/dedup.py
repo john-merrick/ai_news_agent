@@ -4,6 +4,7 @@ from urllib.parse import urlparse, urlunparse
 # "First sources" (papers and direct lab/company posts) outrank aggregators.
 _SOURCE_PRIORITY = {
     "ArXiv": 100,
+    "Anthropic News": 95,  # first-party lab announcements
     "Research Lab Blog": 90,
     "RSS": 70,
     "Reddit": 50,

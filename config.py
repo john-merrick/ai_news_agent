@@ -38,6 +38,14 @@ DAILY_MINUTE = int(os.getenv("DAILY_MINUTE", "0"))
 MAX_ARTICLES_PER_SOURCE = int(os.getenv("MAX_ARTICLES_PER_SOURCE", "10"))
 LOOKBACK_HOURS = int(os.getenv("LOOKBACK_HOURS", "24"))
 
+# Anthropic News page (https://www.anthropic.com/news).
+# Anthropic does not publish an official RSS feed, so this is scraped directly
+# from the server-rendered news index using stdlib parsing (no extra deps).
+# Dates on the page are day-granular, so use a wider default window than the
+# global 24h cutoff to avoid dropping announcements posted late the prior day.
+ANTHROPIC_NEWS_URL = os.getenv("ANTHROPIC_NEWS_URL", "https://www.anthropic.com/news")
+ANTHROPIC_LOOKBACK_HOURS = int(os.getenv("ANTHROPIC_LOOKBACK_HOURS", str(max(LOOKBACK_HOURS, 48))))
+
 # Keyword filter applied to feeds that aren't AI-exclusive (HN frontpage, Simon Willison).
 # Case-insensitive substring match on the entry title.
 _AI_KEYWORD_FILTER = (
