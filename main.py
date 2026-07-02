@@ -97,6 +97,12 @@ def run_agent() -> int:
         print(f"  {len(anthropic)} articles")
         all_articles.extend(anthropic)
 
+        print("Fetching OpenAI News...")
+        openai_news = fetch_openai_news()
+        status["counts"]["openai"] = len(openai_news)
+        print(f"  {len(openai_news)} articles")
+        all_articles.extend(openai_news)
+
         status["total_collected"] = len(all_articles)
         print(f"\nTotal collected: {len(all_articles)} articles")
 
