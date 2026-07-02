@@ -90,6 +90,12 @@ def run_agent() -> int:
         print(f"  {len(arxiv)} papers")
         all_articles.extend(arxiv)
 
+        print("Fetching Anthropic News...")
+        anthropic = fetch_anthropic_news()
+        status["counts"]["anthropic"] = len(anthropic)
+        print(f"  {len(anthropic)} articles")
+        all_articles.extend(anthropic)
+
         status["total_collected"] = len(all_articles)
         print(f"\nTotal collected: {len(all_articles)} articles")
 
