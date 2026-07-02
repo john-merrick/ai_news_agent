@@ -74,7 +74,7 @@ def test_extracts_core_fields_heading_card():
 
 def test_extracts_title_from_headingless_card():
     by_url = {a["url"]: a for a in _parse()}
-    art = by_url["https://openai.com/index/new-safety-framework"]
+    art = by_url["https://openai.com/index/new-safety-framework/"]
     assert art["title"] == "A new safety framework"
     assert art["published"] == "2026-06-29T00:00:00"
 
