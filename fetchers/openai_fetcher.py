@@ -37,7 +37,9 @@ _HEADING_RE = re.compile(r"<h[1-6][^>]*>(.*?)</h[1-6]>", re.DOTALL | re.IGNORECA
 _TIME_RE = re.compile(r"<time[^>]*>(.*?)</time>", re.DOTALL | re.IGNORECASE)
 _BODY_RE = re.compile(r"<p[^>]*>(.*?)</p>", re.DOTALL | re.IGNORECASE)
 # Text-node tags that may carry the title/date when there's no heading element.
-_TEXTNODE_RE = re.compile(r"<(?:span|div|p)[^>]*>(.*?)</(?:span|div|p)>", re.DOTALL | re.IGNORECASE)
+# <p> is deliberately excluded — it holds the body summary (extracted separately)
+# and would otherwise outrank the shorter title text.
+_TEXTNODE_RE = re.compile(r"<(?:span|div)[^>]*>(.*?)</(?:span|div)>", re.DOTALL | re.IGNORECASE)
 _TAG_RE = re.compile(r"<[^>]+>")
 # A day-granular date label, e.g. "Jan 5, 2025" or "January 5, 2025".
 _DATE_TEXT_RE = re.compile(
