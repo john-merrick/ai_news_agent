@@ -63,7 +63,7 @@ def _parse():
 
 def test_extracts_core_fields_heading_card():
     by_url = {a["url"]: a for a in _parse()}
-    art = by_url["https://openai.com/index/introducing-gpt-6"]
+    art = by_url["https://openai.com/index/introducing-gpt-6/"]
     assert art["title"] == "Introducing GPT-6"
     assert art["source"] == SOURCE
     assert art["published"] == "2026-06-30T00:00:00"
