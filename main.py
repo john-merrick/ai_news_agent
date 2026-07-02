@@ -104,6 +104,17 @@ def run_agent() -> int:
         print(f"  {len(openai_news)} articles")
         all_articles.extend(openai_news)
 
+        # Kimi (Moonshot AI) blog. Deliberately NOT wrapped in a swallowing
+        # try/except like the other sources: fetch_kimi_news() raises
+        # KimiFetchError on network/HTTP/parse failure, and that error is allowed
+        # to propagate to the top-level handler below so a broken Kimi source
+        # fails the fetch step loudly instead of silently vanishing.
+        print("Fetching Kimi Blog...")
+        kimi = fetch_kimi_news()
+        status["counts"]["kimi"] = len(kimi)
+        print(f"  {len(kimi)} articles")
+        all_articles.extend(kimi)
+
         status["total_collected"] = len(all_articles)
         print(f"\nTotal collected: {len(all_articles)} articles")
 
