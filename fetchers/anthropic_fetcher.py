@@ -62,7 +62,12 @@ def parse_anthropic_news(
     unparseable date are kept), and caps at ``max_articles``.
     """
     now = now or datetime.now()
-    cutoff = now - timedelta(hours=lookback_hours)
+    # Page dates are day-granular (parsed to 00:00), so floor the cutoff to the
+    # start of the day. Otherwise an announcement posted today would be dropped
+    # a few hours into the lookback window purely because of the 00:00 timestamp.
+    cutoff = (now - timedelta(hours=lookback_hours)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
 
     articles: list[dict] = []
     seen_paths: set[str] = set()
