@@ -90,7 +90,7 @@ def test_schema_matches_pipeline_contract():
 
 def test_deduplicates_by_permalink():
     urls = [a["url"] for a in _parse()]
-    assert urls.count("https://openai.com/index/introducing-gpt-6") == 1
+    assert urls.count("https://openai.com/index/introducing-gpt-6/") == 1
 
 
 def test_applies_lookback_cutoff():
