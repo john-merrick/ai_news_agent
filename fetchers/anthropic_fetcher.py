@@ -123,7 +123,7 @@ def fetch_anthropic_news() -> list[dict]:
         return []
 
     try:
-        articles = parse_anthropic_news(resp.text)
+        articles = parse_anthropic_news(resp.text, lookback_hours=ANTHROPIC_LOOKBACK_HOURS)
     except Exception as e:
         print(f"[Anthropic] Error parsing news page: {e}")
         return []
